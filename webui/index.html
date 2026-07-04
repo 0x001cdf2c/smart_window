@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>灵窗智控</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --card: #16213e;
+    --accent: #0f3460;
+    --highlight: #e94560;
+    --green: #00b894;
+    --text: #eee;
+    --muted: #999;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 12px;
+  }
+  .header {
+    text-align: center; padding: 16px 0 8px;
+  }
+  .header h2 { font-size: 20px; letter-spacing: 2px; }
+  .status {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    margin-top: 6px; font-size: 13px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.online { background: var(--green); }
+  .dot.offline { background: var(--highlight); }
+
+  .section {
+    background: var(--card); border-radius: 12px;
+    margin: 10px 0; padding: 14px;
+  }
+  .section h3 { font-size: 14px; margin-bottom: 10px; color: var(--muted); }
+  label { font-size: 13px; display: block; margin-bottom: 4px; }
+  input, select, button {
+    width: 100%; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--accent); background: #1a1a2e;
+    color: var(--text); font-size: 15px; margin-bottom: 10px;
+    outline: none;
+  }
+  button {
+    background: var(--highlight); border: none; font-weight: bold;
+    cursor: pointer; letter-spacing: 1px;
+  }
+  button:active { opacity: 0.8; }
+  button.secondary { background: var(--accent); }
+
+  .log-list {
+    max-height: 300px; overflow-y: auto;
+    font-size: 12px; font-family: 'Courier New', monospace;
+  }
+  .log-item {
+    padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .log-item .time { color: var(--muted); }
+  .log-item .dir-send { color: #74b9ff; }
+  .log-item .dir-recv { color: var(--green); }
+
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row button { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h2>灵窗智控</h2>
+  <div class="status">
+    <span id="dot" class="dot offline"></span>
+    <span id="statusText">未连接</span>
+    <span id="statusDevId"></span>
+  </div>
+</div>
+
+<div class="section">
+  <h3>连接设置</h3>
+  <label>服务器地址</label>
+  <input id="serverUrl" value="ws://47.105.45.239:8765" placeholder="ws://47.105.45.239:8765">
+  <label>设备 ID</label>
+  <input id="deviceId" value="blinds_001" placeholder="blinds_001">
+  <button id="btnConnect">连接设备</button>
+</div>
+
+<div class="section">
+  <h3>快捷指令</h3>
+  <div class="btn-row">
+    <button class="secondary quick-cmd" data-payload='{"action":"open"}'>开窗</button>
+    <button class="secondary quick-cmd" data-payload='{"action":"close"}'>关窗</button>
+    <button class="secondary quick-cmd" data-payload='{"action":"stop"}'>暂停</button>
+  </div>
+  <div class="btn-row" style="margin-top:6px">
+    <button class="secondary quick-cmd" data-payload='{"action":"auto_mode"}'>自动模式</button>
+    <button class="secondary quick-cmd" data-payload='{"action":"sleep_mode"}'>睡眠模式</button>
+  </div>
+</div>
+
+<div class="section">
+  <h3>自定义消息</h3>
+  <label>消息类型</label>
+  <input id="customType" value="cmd" placeholder="cmd">
+  <label>Payload (JSON)</label>
+  <input id="customPayload" value='{}' placeholder='{"action":"set_angle","value":45}'>
+  <button id="btnSend">发送</button>
+</div>
+
+<div class="section">
+  <h3>消息日志</h3>
+  <button id="btnClear" class="secondary" style="margin-bottom:8px">清空</button>
+  <div id="logList" class="log-list">
+    <div style="color:var(--muted);font-size:12px">暂无消息</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var ws = null;
+
+  var dot      = document.getElementById('dot');
+  var btnConn  = document.getElementById('btnConnect');
+  var statusText = document.getElementById('statusText');
+  var statusDevId = document.getElementById('statusDevId');
+  var logList  = document.getElementById('logList');
+
+  function addLog(dir, text) {
+    var now = new Date();
+    var time = now.toTimeString().slice(0,8);
+    var div = document.createElement('div');
+    div.className = 'log-item';
+    div.innerHTML = '<span class="time">' + time + '</span> '
+      + '<span class="' + (dir === 'send' ? 'dir-send' : 'dir-recv') + '">'
+      + (dir === 'send' ? '→' : '←') + '</span> ' + text;
+    logList.appendChild(div);
+    while (logList.children.length > 200) logList.removeChild(logList.firstChild);
+  }
+
+  function setConnected(c) {
+    dot.className = 'dot ' + (c ? 'online' : 'offline');
+    statusText.textContent = c ? '已连接' : '未连接';
+    btnConn.textContent = c ? '断开' : '连接设备';
+    var devId = document.getElementById('deviceId').value;
+    statusDevId.textContent = c ? ' | ' + devId : '';
+  }
+
+  function sendRaw(type, payload) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      var pl = JSON.parse(payload);
+    } catch(e) {
+      pl = payload;
+    }
+    pl.type = type;
+    var msg = { type: 'send', payload: pl };
+    ws.send(JSON.stringify(msg));
+    addLog('send', JSON.stringify(msg.payload));
+  }
+
+  document.getElementById('btnConnect').onclick = function() {
+    if (ws) {
+      ws.close();
+      return;
+    }
+    var url = document.getElementById('serverUrl').value;
+    ws = new WebSocket(url);
+
+    ws.onopen = function() {
+      setConnected(true);
+      ws.send(JSON.stringify({
+        type: 'register',
+        payload: {
+          device_id: document.getElementById('deviceId').value,
+          role: 'client'
+        }
+      }));
+      addLog('recv', '已连接');
+    };
+
+    ws.onclose = function() {
+      setConnected(false);
+      ws = null;
+      addLog('recv', '已断开');
+    };
+
+    ws.onerror = function() {
+      addLog('recv', '连接错误');
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        addLog('recv', JSON.stringify(msg));
+      } catch(ex) {
+        addLog('recv', e.data);
+      }
+    };
+  };
+
+  var quickBtns = document.querySelectorAll('.quick-cmd');
+  for (var i = 0; i < quickBtns.length; i++) {
+    quickBtns[i].onclick = function() {
+      document.getElementById('customType').value = 'cmd';
+      document.getElementById('customPayload').value = this.dataset.payload;
+      sendRaw('cmd', this.dataset.payload);
+    };
+  }
+
+  document.getElementById('btnSend').onclick = function() {
+    sendRaw(
+      document.getElementById('customType').value,
+      document.getElementById('customPayload').value
+    );
+  };
+
+  document.getElementById('btnClear').onclick = function() {
+    logList.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无消息</div>';
+  };
+})();
+</script>
+</body>
+</html>

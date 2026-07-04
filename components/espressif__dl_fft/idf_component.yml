@@ -1,0 +1,10 @@
+dependencies:
+  idf: '>=5.0'
+description: dl_fft is a lightweight and efficient fft library for all espressif chips.
+license: MIT
+repository: git://github.com/espressif/esp-dl.git
+repository_info:
+  commit_sha: 680a1b9ea1dfff490848d9cb83684f294559ecdd
+  path: tools/dl_fft
+url: https://github.com/espressif/esp-dl/tree/master/esp-dl/tools/dl_fft
+version: 0.5.0

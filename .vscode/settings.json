@@ -1,0 +1,12 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.extensionActivationMode": "always",
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\28145\\Desktop\\IOT\\code\\Net\\build"
+  ],
+  "idf.customExtraVars": {},
+  "idf.currentSetup": "C:\\Espressif\\v5.5.4\\esp-idf"
+}
