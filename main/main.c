@@ -6,6 +6,7 @@
 #include "config.h"
 #include "nvs_flash.h"
 #include "msg_bus.h"
+#include "esp_hosted.h"
 #include "speech_recognition.h"
 #include "voice_reply.h"
 
@@ -97,7 +98,6 @@ void app_main(void)
         ESP_LOGI(TAG, "语音识别就绪");
     }
 
-#if 0  /* ── 暂时跳过 ESP-Hosted, 测试 I2S 是否持续工作 ── */
     /* 2. ESP-Hosted 初始化 (在 SR 之后, 避免 DRAM 竞争) */
     ESP_LOGI(TAG, "启动 ESP-Hosted...");
     if (esp_hosted_init() != 0) {
@@ -112,14 +112,14 @@ void app_main(void)
     } else {
         msg_bus_on_recv(on_message);
         net_ok = true;
+        voice_reply_say("联网成功");
     }
 
     /* 4. 传感器任务仅在有网络时启动 */
     if (net_ok) {
         xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
     }
-#endif
 
-    ESP_LOGI(TAG, "系统就绪 (语音=%s, 联网=OFF[测试])",
-             sr_ok ? "ON" : "OFF");
+    ESP_LOGI(TAG, "系统就绪 (语音=%s, 联网=%s)",
+             sr_ok ? "ON" : "OFF", net_ok ? "ON" : "OFF");
 }
