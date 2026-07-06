@@ -15,15 +15,13 @@
  *   model 1: wn9_hiesp    → "嗨 ESP"
  *   model 2: wn9_hilexin  → "你好乐鑫" */
 static const char *WAKE_WORDS[] = {
-    "wn9_hiesp",          /* model 1, "嗨 ESP" */
-    "wn9_hilexin",        /* model 2, "你好乐鑫" */
+    "wn9_hiesp",          /* "嗨 ESP" */
     NULL
 };
 
 /* 每个唤醒词对应的显示名称, 索引 = wakenet_model_index - 1 */
 static const char *WAKE_WORD_NAMES[] = {
     "嗨 ESP",
-    "你好乐鑫",
 };
 
 /* ── 中文命令词列表 (拼音无音调, MultiNet7 要求) ──

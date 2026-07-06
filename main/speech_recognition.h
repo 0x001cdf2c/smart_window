@@ -1,5 +1,7 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
+#include "driver/i2s_std.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +28,18 @@ void sr_start(void);
 
 /* 轮询: 需在主循环或独立任务中周期性调用 */
 void sr_poll(void);
+
+/* 暂停/恢复 I2S 录音 (播放语音回复时暂停) */
+void sr_pause(bool pause);
+
+/* 获取 I2S TX 通道句柄 (供 voice_reply 播放 TTS 音频) */
+i2s_chan_handle_t sr_get_tx_chan(void);
+
+/* 恢复 I2S RX 通道 (在 TTS 初始化可能干扰 RX 状态后调用) */
+void sr_recover_rx(void);
+
+/* 配置 ES8311 用于播放 (音量 + 取消静音) */
+void sr_configure_playback(void);
 
 #ifdef __cplusplus
 }

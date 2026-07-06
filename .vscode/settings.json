@@ -7,6 +7,11 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\28145\\Desktop\\IOT\\code\\Net\\build"
   ],
-  "idf.customExtraVars": {},
-  "idf.currentSetup": "C:\\Espressif\\v5.5.4\\esp-idf"
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32p4"
+  },
+  "idf.currentSetup": "C:\\Espressif\\v5.5.4\\esp-idf",
+  "idf.openOcdConfigs": [
+    "board/esp32p4-ftdi.cfg"
+  ]
 }

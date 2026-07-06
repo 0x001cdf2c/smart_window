@@ -25,7 +25,7 @@ static const char *TAG = "SR";
 #define I2S_BCK   GPIO_NUM_12
 #define I2S_WS    GPIO_NUM_10
 #define I2S_DIN   GPIO_NUM_11
-#define I2S_DOUT  GPIO_NUM_NC   /* 本应用只用录音，不播放 */
+#define I2S_DOUT  GPIO_NUM_9    /* ES8311 DSDIN 播放用 */
 
 /* ── ES8311 I2C 控制 ── */
 #define ES8311_I2C_PORT    I2C_NUM_0
@@ -43,6 +43,7 @@ static const char *TAG = "SR";
 #define AFE_TIMEOUT_MS    2000
 
 /* ── 状态 ── */
+static i2s_chan_handle_t tx_chan = NULL;
 static i2s_chan_handle_t rx_chan = NULL;
 static es8311_handle_t es8311_hdl = NULL;
 
@@ -135,16 +136,17 @@ static int i2s_mic_init(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &rx_chan));
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, &rx_chan));
 
-    i2s_std_config_t std_cfg = {
+    /* RX 通道: 麦克风输入 (时钟 + DIN) */
+    i2s_std_config_t rx_std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_MCK,
             .bclk = I2S_BCK,
             .ws   = I2S_WS,
-            .dout = I2S_DOUT,
+            .dout = I2S_GPIO_UNUSED,
             .din  = I2S_DIN,
             .invert_flags = {
                 .mclk_inv = false,
@@ -153,12 +155,33 @@ static int i2s_mic_init(void)
             },
         },
     };
-    std_cfg.clk_cfg.mclk_multiple = MCLK_MULTIPLE;
+    rx_std_cfg.clk_cfg.mclk_multiple = MCLK_MULTIPLE;
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &rx_std_cfg));
 
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
+    /* TX 通道: 喇叭输出 (仅 DOUT, 时钟与 RX 共享) */
+    i2s_std_config_t tx_std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_GPIO_UNUSED,
+            .ws   = I2S_GPIO_UNUSED,
+            .dout = I2S_DOUT,
+            .din  = I2S_GPIO_UNUSED,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+    tx_std_cfg.clk_cfg.mclk_multiple = MCLK_MULTIPLE;
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
+
+    /* 启动 RX, TX 由 voice_reply 按需启用 */
     ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
 
-    ESP_LOGI(TAG, "I2S 主模式就绪 (MCLK=GPIO%d, STEREO %d Hz)",
+    ESP_LOGI(TAG, "I2S 主模式就绪 (MCLK=GPIO%d, STEREO %d Hz, TX+RX)",
              I2S_MCK, SAMPLE_RATE);
     return 0;
 }
@@ -314,6 +337,36 @@ void sr_start(void)
         return;
     }
     ESP_LOGI(TAG, "语音识别已启动");
+}
+
+void sr_pause(bool pause)
+{
+    if (!rx_chan) return;
+    if (pause) {
+        i2s_channel_disable(rx_chan);
+    } else {
+        i2s_channel_enable(rx_chan);
+    }
+}
+
+i2s_chan_handle_t sr_get_tx_chan(void)
+{
+    return tx_chan;
+}
+
+void sr_recover_rx(void)
+{
+    if (!rx_chan) return;
+    i2s_channel_disable(rx_chan);
+    i2s_channel_enable(rx_chan);
+}
+
+void sr_configure_playback(void)
+{
+    if (!es8311_hdl) return;
+    es8311_voice_volume_set(es8311_hdl, 80, NULL);
+    es8311_voice_mute(es8311_hdl, false);
+    ESP_LOGI(TAG, "ES8311 播放就绪 (音量=80%%, 未静音)");
 }
 
 /* ── 音频处理: 从 I2S (立体声) 喂数据到 AFE (单声道) ── */

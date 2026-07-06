@@ -12,6 +12,13 @@
 #include "esp_websocket_client.h"
 #include "nvs_flash.h"
 #include "cJSON.h"
+#include "driver/gpio.h"
+#include "esp_partition.h"
+#include "esp_app_desc.h"
+#include "esp_image_format.h"
+#include "esp_hosted_ota.h"
+#include "esp_hosted.h"
+#include "esp_hosted_api_types.h"
 
 static const char *TAG = "msg_bus";
 
@@ -29,15 +36,165 @@ static EventGroupHandle_t     g_evt = NULL;
 #define BIT_WIFI_CONNECTED   BIT0
 #define BIT_WS_CONNECTED     BIT1
 
+#define OTA_CHUNK_SIZE 1500
+#define SLAVE_RST_GPIO  54
+
+/* ── C6 从机 OTA 升级 (通过 SDIO) ── */
+static int slave_ota_update(void)
+{
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "slave_fw");
+    if (!part) {
+        ESP_LOGW(TAG, "未找到 slave_fw 分区, 跳过 C6 OTA");
+        return -1;
+    }
+
+    /* 检查分区是否为空 */
+    uint8_t buf[256];
+    esp_partition_read(part, 0, buf, sizeof(buf));
+    bool empty = true;
+    for (int i = 0; i < sizeof(buf); i++) {
+        if (buf[i] != 0xFF) { empty = false; break; }
+    }
+    if (empty) {
+        ESP_LOGW(TAG, "slave_fw 分区为空, 跳过 C6 OTA");
+        return -1;
+    }
+
+    /* 读镜像头 */
+    esp_image_header_t img_hdr;
+    esp_partition_read(part, 0, &img_hdr, sizeof(img_hdr));
+    if (img_hdr.magic != ESP_IMAGE_HEADER_MAGIC) {
+        ESP_LOGE(TAG, "slave_fw 分区无有效固件镜像");
+        return -1;
+    }
+
+    /* 读镜像版本 */
+    esp_app_desc_t new_desc = {0};
+    esp_partition_read(part, sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t),
+                       &new_desc, sizeof(new_desc));
+    ESP_LOGI(TAG, "分区内 C6 固件版本: %s", new_desc.version);
+
+    /* 查询 C6 实际运行的固件版本, 已是最新则跳过 */
+    esp_hosted_coprocessor_fwver_t c6_ver = {0};
+    if (esp_hosted_get_coprocessor_fwversion(&c6_ver) == 0) {
+        char c6_ver_str[32];
+        snprintf(c6_ver_str, sizeof(c6_ver_str), "%" PRIu32 ".%" PRIu32 ".%" PRIu32,
+                 c6_ver.major1, c6_ver.minor1, c6_ver.patch1);
+        ESP_LOGI(TAG, "C6 当前运行固件版本: %s", c6_ver_str);
+
+        if (strcmp(new_desc.version, c6_ver_str) == 0) {
+            ESP_LOGI(TAG, "C6 已是目标版本 %s, 跳过 OTA", c6_ver_str);
+            return 1;
+        }
+    } else {
+        ESP_LOGW(TAG, "无法获取 C6 固件版本, 继续尝试 OTA");
+    }
+
+    /* 计算固件总大小 */
+    size_t total = sizeof(esp_image_header_t);
+    size_t off = total;
+    for (int i = 0; i < img_hdr.segment_count; i++) {
+        esp_image_segment_header_t seg;
+        esp_partition_read(part, off, &seg, sizeof(seg));
+        total += sizeof(seg) + seg.data_len;
+        off += sizeof(seg) + seg.data_len;
+    }
+    total = (total + 15) & ~15;
+    total += 1;
+    if (img_hdr.hash_appended) {
+        total = ((total + 15) & ~15) + 32;
+    }
+
+    ESP_LOGI(TAG, "===== 开始 C6 OTA (%s) =====", new_desc.version);
+    ESP_LOGI(TAG, "固件大小: %u bytes", (unsigned)total);
+
+    esp_err_t ret = esp_hosted_slave_ota_begin();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "OTA begin 失败: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    uint8_t *chunk = malloc(OTA_CHUNK_SIZE);
+    size_t sent = 0;
+    while (sent < total) {
+        size_t n = (total - sent > OTA_CHUNK_SIZE) ? OTA_CHUNK_SIZE : (total - sent);
+        esp_partition_read(part, sent, chunk, n);
+        ret = esp_hosted_slave_ota_write(chunk, n);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "OTA write 失败 @%u: %s", (unsigned)sent, esp_err_to_name(ret));
+            free(chunk);
+            esp_hosted_slave_ota_end();
+            return -1;
+        }
+        sent += n;
+        if (sent % (OTA_CHUNK_SIZE * 20) == 0 || sent == total) {
+            ESP_LOGI(TAG, "OTA 进度: %u/%u (%.0f%%)",
+                     (unsigned)sent, (unsigned)total,
+                     (float)sent * 100 / total);
+        }
+    }
+    free(chunk);
+
+    ret = esp_hosted_slave_ota_end();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "OTA end 失败: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "OTA 写入完成");
+
+    /* 激活新固件 (C6 FW > v2.5.X 需要, 会自动复位 C6) */
+    bool activate_supported = false;
+    if (c6_ver.major1 > 2 || (c6_ver.major1 == 2 && c6_ver.minor1 > 5)) {
+        activate_supported = true;
+    }
+    if (activate_supported) {
+        ret = esp_hosted_slave_ota_activate();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "C6 新固件已激活, C6 将自动重启");
+        } else {
+            ESP_LOGW(TAG, "activate 失败: %s, 改用 GPIO 复位", esp_err_to_name(ret));
+            activate_supported = false;
+        }
+    }
+
+    if (!activate_supported) {
+        /* 手动拉 GPIO54 复位 C6 */
+        gpio_config_t io_cfg = {
+            .pin_bit_mask = BIT64(SLAVE_RST_GPIO),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_cfg);
+        gpio_set_level(SLAVE_RST_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(SLAVE_RST_GPIO, 1);
+        ESP_LOGI(TAG, "已复位 C6 (GPIO%d)", SLAVE_RST_GPIO);
+    }
+
+    /* 保存 OTA 完成标记到 NVS */
+    nvs_handle_t nvs;
+    if (nvs_open("ota", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_str(nvs, "c6_ver", new_desc.version);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "C6 OTA 标记已保存: %s", new_desc.version);
+    }
+
+    ESP_LOGI(TAG, "===== C6 OTA 完成, 等待 C6 重启 =====");
+    return 0;
+}
+
 /* ================================================================
  * WiFi
  * ================================================================ */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(g_evt, BIT_WIFI_CONNECTED);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -49,7 +206,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 
 static int wifi_init(const char *ssid, const char *pass)
 {
-    nvs_flash_init();
     esp_netif_init();
     esp_event_loop_create_default();
 
@@ -64,19 +220,103 @@ static int wifi_init(const char *ssid, const char *pass)
     esp_err_t mac_ret = esp_wifi_set_mac(WIFI_IF_STA, mac);
     ESP_LOGI(TAG, "esp_wifi_set_mac returned: %s", esp_err_to_name(mac_ret));
 
+    /* ── C6 从机 OTA 升级 (transport 已就绪) ── */
+    int ota_ret = slave_ota_update();
+    if (ota_ret == 0) {
+        /* OTA 执行了, C6 已复位, 等新固件起来后重启 P4 */
+        ESP_LOGI(TAG, "等待 C6 新固件启动...");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        esp_restart();
+    }
+
+    /* ── 基础测试: 先用 SoftAP 验证 C6 WiFi 硬件是否工作 ── */
+    ESP_LOGI(TAG, "===== 测试 C6 SoftAP 模式 =====");
+    esp_netif_create_default_wifi_ap();
+    esp_wifi_set_mode(WIFI_MODE_AP);
+    wifi_config_t ap_cfg = {
+        .ap = {
+            .ssid = "C6_Test_AP",
+            .ssid_len = 10,
+            .password = "12345678",
+            .max_connection = 2,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    esp_wifi_start();
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    ESP_LOGI(TAG, "SoftAP 已启动, 请用手机搜索 'C6_Test_AP'");
+    ESP_LOGI(TAG, "===== SoftAP 测试结束 =====");
+
+    /* 切回 STA 模式, 注册事件处理器后再扫描 */
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_wifi_set_mode(WIFI_MODE_STA);
+
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                         wifi_event_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                         wifi_event_handler, NULL, NULL);
 
+    esp_wifi_start();
+
+    /* 等待 WiFi 启动完成再扫描 (不注册自动重连, 避免干扰扫描) */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    /* ── 扫描周围 WiFi ── */
+    ESP_LOGI(TAG, "===== 开始扫描 WiFi =====");
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+    esp_wifi_scan_start(&scan_cfg, true);
+
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    ESP_LOGI(TAG, "扫描到 %d 个 AP", ap_count);
+
+    if (ap_count > 0) {
+        wifi_ap_record_t *ap_list = calloc(ap_count, sizeof(wifi_ap_record_t));
+        esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+
+        for (int i = 0; i < ap_count; i++) {
+            ESP_LOGI(TAG, "  [%d] SSID:%-24s RSSI:%d  CH:%d  AUTH:%d",
+                     i + 1,
+                     ap_list[i].ssid,
+                     ap_list[i].rssi,
+                     ap_list[i].primary,
+                     ap_list[i].authmode);
+        }
+
+        /* 检查目标 SSID 是否在扫描结果中 */
+        bool found = false;
+        for (int i = 0; i < ap_count; i++) {
+            if (strcmp((char *)ap_list[i].ssid, ssid) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            ESP_LOGI(TAG, "目标热点 [%s] 在扫描结果中 ✓", ssid);
+        } else {
+            ESP_LOGE(TAG, "目标热点 [%s] 不在扫描结果中 ✗", ssid);
+        }
+
+        free(ap_list);
+    }
+    ESP_LOGI(TAG, "===== 扫描结束 =====");
+
+    /* 配置并连接 */
     wifi_config_t wifi_cfg = {0};
     strncpy((char *)wifi_cfg.sta.ssid, ssid, 32);
     strncpy((char *)wifi_cfg.sta.password, pass, 64);
     wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-    esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
-    esp_wifi_start();
+    esp_wifi_connect();
 
     EventBits_t bits = xEventGroupWaitBits(g_evt, BIT_WIFI_CONNECTED, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
     return (bits & BIT_WIFI_CONNECTED) ? 0 : -1;
@@ -176,7 +416,11 @@ int msg_bus_send(const char *type, const char *payload)
     cJSON_AddStringToObject(root, "type", "send");
 
     cJSON *pl = cJSON_Parse(payload);
-    cJSON_AddItemToObject(root, "payload", pl ? pl : cJSON_CreateString(payload));
+    if (!pl) pl = cJSON_CreateString(payload);
+    if (cJSON_IsObject(pl)) {
+        cJSON_AddStringToObject(pl, "type", type);
+    }
+    cJSON_AddItemToObject(root, "payload", pl);
 
     char *str = cJSON_PrintUnformatted(root);
     int len = strlen(str);

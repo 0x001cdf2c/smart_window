@@ -76,6 +76,5 @@ Desktop.ini
 *.workspace # General workspace files, can be from various tools
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
-esp_hosted_slave/
 component_manager_run_counter.*
 components_with_manifests_list.temp
