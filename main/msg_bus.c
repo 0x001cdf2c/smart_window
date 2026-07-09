@@ -23,7 +23,7 @@
 static const char *TAG = "msg_bus";
 
 /* ---------- 配置 ---------- */
-#define RECV_BUF_SIZE  2048
+#define RECV_BUF_SIZE  8192
 #define RECONNECT_MS   5000
 
 /* ---------- 状态 ---------- */
@@ -195,6 +195,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *)data;
+        ESP_LOGW(TAG, "WiFi 断开, reason=%d", ev->reason);
         xEventGroupClearBits(g_evt, BIT_WIFI_CONNECTED);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -214,6 +216,7 @@ static int wifi_init(const char *ssid, const char *pass)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
+    esp_wifi_set_ps(WIFI_PS_NONE);  /* 禁用省电, 避免 C6 断连 */
 
     /* 设置有效 MAC 地址 (P4 通过 SDIO 传给 C6) */
     uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
@@ -337,23 +340,51 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGI(TAG, "WebSocket 断开, 将自动重连");
+        ESP_LOGW(TAG, "WebSocket 断开 op=%d len=%d data=%.*s",
+                 ev->op_code, ev->data_len,
+                 ev->data_len > 0 ? ev->data_len : 0,
+                 ev->data_ptr ? (char *)ev->data_ptr : "");
         xEventGroupClearBits(g_evt, BIT_WS_CONNECTED);
         break;
 
     case WEBSOCKET_EVENT_DATA:
         if (ev->op_code == 0x01 || ev->op_code == 0x02) { /* text/binary */
-            /* 解析消息 */
-            cJSON *root = cJSON_ParseWithLength(ev->data_ptr, ev->data_len);
-            if (root) {
-                cJSON *t = cJSON_GetObjectItem(root, "type");
-                cJSON *p = cJSON_GetObjectItem(root, "payload");
-                if (t && p && g_callback) {
-                    char *payload_str = cJSON_PrintUnformatted(p);
-                    g_callback(t->valuestring, payload_str, strlen(payload_str));
-                    free(payload_str);
+            const char *ptr = ev->data_ptr;
+            const char *end = ptr + ev->data_len;
+
+            /* 一帧可能含多条 JSON (服务器合并转发), 逐个解析 */
+            while (ptr < end) {
+                /* 跳过空白 */
+                while (ptr < end && (*ptr == ' ' || *ptr == '\n' || *ptr == '\r' || *ptr == '\t'))
+                    ptr++;
+                if (ptr >= end || *ptr != '{') break;
+
+                /* 找匹配的 } */
+                const char *p = ptr;
+                int depth = 0;
+                while (p < end) {
+                    if (*p == '{') depth++;
+                    else if (*p == '}') { depth--; if (depth == 0) { p++; break; } }
+                    p++;
                 }
-                cJSON_Delete(root);
+
+                int len = p - ptr;
+                cJSON *root = cJSON_ParseWithLength(ptr, len);
+                if (root) {
+                    cJSON *t = cJSON_GetObjectItem(root, "type");
+                    cJSON *pld = cJSON_GetObjectItem(root, "payload");
+                    if (t && pld && g_callback) {
+                        if (cJSON_IsString(pld)) {
+                            g_callback(t->valuestring, pld->valuestring, strlen(pld->valuestring));
+                        } else {
+                            char *payload_str = cJSON_PrintUnformatted(pld);
+                            g_callback(t->valuestring, payload_str, strlen(payload_str));
+                            free(payload_str);
+                        }
+                    }
+                    cJSON_Delete(root);
+                }
+                ptr = p;
             }
         }
         break;
@@ -382,8 +413,8 @@ int msg_bus_init(const char *server_url, const char *device_id)
     ws_cfg.uri = g_server_url;
     ws_cfg.reconnect_timeout_ms = RECONNECT_MS;
     ws_cfg.buffer_size = RECV_BUF_SIZE;
-    ws_cfg.task_stack = 4096;
-    ws_cfg.task_prio = 5;
+    ws_cfg.task_stack = 6144;
+    ws_cfg.task_prio = 7;
 
     g_ws = esp_websocket_client_init(&ws_cfg);
     esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);

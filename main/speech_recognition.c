@@ -116,6 +116,14 @@ static void es8311_codec_init(void)
         ESP_LOGE(TAG, "麦克风配置失败: %s", esp_err_to_name(ret));
     }
 
+    /* 调高麦克风增益, 提高唤醒灵敏度 */
+    ret = es8311_microphone_gain_set(es8311_hdl, ES8311_MIC_GAIN_30DB);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "麦克风增益设置失败: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "麦克风增益=30dB");
+    }
+
     /* PA 使能 */
     gpio_config_t pa_cfg = {
         .pin_bit_mask = BIT64(PA_CTRL_GPIO),

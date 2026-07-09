@@ -49,3 +49,6 @@ python build_n_flash.py build reconf
 | I2C SDA | 7 |
 | I2C SCL | 8 |
 | PA CTRL | 53 |
+
+
+claude --resume 78bf2cab-6a38-45f9-b6fa-510d0a78a8f5 --dangerously-skip-permissions

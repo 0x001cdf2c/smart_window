@@ -1,6 +1,6 @@
 import serial, time, sys
 
-s = serial.Serial('COM8', 115200, timeout=0.5)
+s = serial.Serial('COM11', 115200, timeout=0.5)
 t0 = time.time()
 print("=== Serial capture started ===")
 try:
