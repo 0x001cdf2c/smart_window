@@ -16,6 +16,8 @@
 #include "servo_manager.h"
 #include "sht3x.h"
 #include "bh1750.h"
+#include "display.h"
+#include "ui.h"
 
 static const char *TAG = "main";
 
@@ -25,6 +27,43 @@ static QueueHandle_t g_cmd_queue = NULL;
 
 /* ── 自动模式控制 ── */
 static bool g_auto_running = false;
+
+/* Forward declarations (referenced in network_init_task) */
+static void on_message(const char *type, const char *data, uint16_t data_len);
+static void sensor_task(void *arg);
+
+/* ── 网络初始化任务 (后台运行, 避免 app_main 阻塞导致 IDLE 看门狗超时) ── */
+static void network_init_task(void *arg)
+{
+    ESP_LOGI(TAG, "启动 ESP-Hosted...");
+    if (esp_hosted_init() != 0) {
+        ESP_LOGW(TAG, "ESP-Hosted 初始化失败, 联网功能不可用");
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "ESP-Hosted 就绪");
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    if (msg_bus_init(SERVER_URL, DEVICE_ID) != 0) {
+        ESP_LOGW(TAG, "消息总线初始化失败, 联网功能不可用");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    msg_bus_on_recv(on_message);
+
+    display_lvgl_lock();
+    ui_update_connection(true);
+    display_lvgl_unlock();
+
+    voice_reply_say("联网成功");
+
+    /* 传感器上报任务 (网络就绪后启动) */
+    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
+
+    ESP_LOGI(TAG, "网络初始化完成");
+    vTaskDelete(NULL);
+}
 
 /* ── 语音唤醒回调 ── */
 static void on_wake_word(int wake_word_index, const char *wake_word_name)
@@ -41,6 +80,7 @@ static const char *get_command_chinese(const char *pinyin)
     if (strstr(pinyin, "ting zhi"))             return "停止";
     if (strstr(pinyin, "da kai deng guang"))    return "打开灯光";
     if (strstr(pinyin, "guan bi deng guang"))   return "关闭灯光";
+    if (strstr(pinyin, "tian qi"))             return "天气查询";
     return NULL;
 }
 
@@ -56,17 +96,20 @@ static void on_speech_command(const char *command_str)
         if (strcmp(chinese, "打开窗帘") == 0) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
-            servo_set_angle(90.0f);
+            servo_set_angle(0.0f);
             snprintf(buf, sizeof(buf), "收到，%s", chinese);
         } else if (strcmp(chinese, "关闭窗帘") == 0) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
-            servo_set_angle(0.0f);
+            servo_set_angle(90.0f);
             snprintf(buf, sizeof(buf), "收到，%s", chinese);
         } else if (strcmp(chinese, "停止") == 0) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
             snprintf(buf, sizeof(buf), "收到，已停止");
+        } else if (strcmp(chinese, "天气查询") == 0) {
+            msg_bus_send("weather_query", "{}");
+            snprintf(buf, sizeof(buf), "正在查询天气");
         } else {
             snprintf(buf, sizeof(buf), "收到，%s", chinese);
         }
@@ -126,13 +169,13 @@ static void handle_web_command(const char *json_str)
     } else if (strcmp(cmd, "open_blinds") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
-        servo_set_angle(90.0f);
+        servo_set_angle(0.0f);
         voice_reply_say("打开窗帘");
 
     } else if (strcmp(cmd, "close_blinds") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
-        servo_set_angle(0.0f);
+        servo_set_angle(90.0f);
         voice_reply_say("关闭窗帘");
 
     } else if (strcmp(cmd, "voice_cmd") == 0) {
@@ -141,16 +184,47 @@ static void handle_web_command(const char *json_str)
             if (strstr(text_item->valuestring, "打开")) {
                 g_auto_running = false;
                 servo_set_mode(SERVO_MODE_MANUAL);
-                servo_set_angle(90.0f);
+                servo_set_angle(0.0f);
             } else if (strstr(text_item->valuestring, "关闭")) {
                 g_auto_running = false;
                 servo_set_mode(SERVO_MODE_MANUAL);
-                servo_set_angle(0.0f);
+                servo_set_angle(90.0f);
             } else if (strstr(text_item->valuestring, "停止")) {
                 g_auto_running = false;
                 servo_set_mode(SERVO_MODE_MANUAL);
             }
         }
+
+    } else if (strcmp(cmd, "weather") == 0) {
+        cJSON *city = cJSON_GetObjectItem(root, "city");
+        cJSON *wthr = cJSON_GetObjectItem(root, "weather");
+        cJSON *high = cJSON_GetObjectItem(root, "high");
+        cJSON *low  = cJSON_GetObjectItem(root, "low");
+        cJSON *rain = cJSON_GetObjectItem(root, "rain_pct");
+
+        char weather_buf[192];
+        if (city && city->valuestring && wthr && wthr->valuestring) {
+            int h = high ? (int)high->valuedouble : 0;
+            int l = low  ? (int)low->valuedouble : 0;
+            int r = rain ? (int)rain->valuedouble : 0;
+
+            if (r > 0) {
+                snprintf(weather_buf, sizeof(weather_buf),
+                    "%s今天%s，%d到%d度，降水概率百分之%d",
+                    city->valuestring, wthr->valuestring, l, h, r);
+            } else {
+                snprintf(weather_buf, sizeof(weather_buf),
+                    "%s今天%s，%d到%d度",
+                    city->valuestring, wthr->valuestring, l, h);
+            }
+            display_lvgl_lock();
+            ui_update_weather(city->valuestring, wthr->valuestring, h, l, r);
+            display_lvgl_unlock();
+        } else {
+            snprintf(weather_buf, sizeof(weather_buf), "暂无天气数据");
+        }
+        ESP_LOGI(TAG, "[天气] %s", weather_buf);
+        voice_reply_say(weather_buf);
 
     } else if (strcmp(cmd, "set_temp") == 0) {
         /* 预留: 温度阈值设置 */
@@ -213,11 +287,20 @@ static void sensor_task(void *arg)
         if (sht3x_read(&sht)) {
             temp_f = sht.temperature;
             humi_f = sht.humidity;
+            ESP_LOGI(TAG, "SHT3x OK: T=%.1f H=%.0f", temp_f, humi_f);
+        } else {
+            ESP_LOGW(TAG, "SHT3x read failed");
         }
         /* 真实光照数据 (BH1750) */
         float lux_f = 0;
         bh1750_read(&lux_f);
         int light = (int)lux_f;
+
+        /* Update LVGL UI (thread-safe with lv_lock) */
+        display_lvgl_lock();
+        ui_update_sensor(temp_f, humi_f, light);
+        ui_update_mode(servo_get_mode() == SERVO_MODE_AUTO);
+        display_lvgl_unlock();
 
         char buf[192];
         snprintf(buf, sizeof(buf),
@@ -267,7 +350,6 @@ void app_main(void)
     xTaskCreate(command_task, "cmd_task", 4096, NULL, 5, NULL);
 
     bool sr_ok = false;
-    bool net_ok = false;
 
     /* 0. 初始化 4 路舵机 (GPIO20-23, 统一复位到 0°) */
     int servo_gpios[4] = {20, 21, 22, 23};
@@ -280,7 +362,23 @@ void app_main(void)
         ESP_LOGW(TAG, "舵机初始化失败");
     }
 
-    /* 1. 语音识别 (初始化 I2C + ES8311) */
+    /* 0b. 显示屏 (EK79007 7" 1024x600 MIPI DSI) */
+    if (display_init() == ESP_OK) {
+        ESP_LOGI(TAG, "display OK, starting LVGL...");
+        display_lvgl_init();
+        ESP_LOGI(TAG, "LVGL init done, starting UI...");
+        ui_init();
+        ESP_LOGI(TAG, "UI done, starting LVGL task...");
+        display_lvgl_task_start();  /* start LVGL rendering AFTER UI is built */
+        ESP_LOGI(TAG, "LVGL task started");
+        touch_init();  /* GT911 touch must init AFTER LVGL display is created */
+    } else {
+        ESP_LOGW(TAG, "显示屏初始化失败");
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));  /* let CPU1 LVGL render; feed CPU0 watchdog */
+
+    /* 1. 语音识别 (初始化 I2C + ES8311, 加载模型) */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (sr_init() != 0) {
         ESP_LOGW(TAG, "语音识别初始化失败");
     } else {
@@ -299,37 +397,20 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "SHT3x 温湿度传感器就绪");
     }
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     /* 2b. 光照传感器 (BH1750, I2C 0x23) */
     if (!bh1750_init()) {
         ESP_LOGW(TAG, "BH1750 初始化失败, 光照数据不可用");
     }
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* 3. ESP-Hosted */
-    ESP_LOGI(TAG, "启动 ESP-Hosted...");
-    if (esp_hosted_init() != 0) {
-        ESP_LOGW(TAG, "ESP-Hosted 初始化失败, 联网功能不可用");
-    } else {
-        ESP_LOGI(TAG, "ESP-Hosted 就绪");
-    }
+    /* 3. 网络初始化 (后台任务, 避免阻塞 app_main 导致 IDLE0 看门狗超时) */
+    xTaskCreate(network_init_task, "net_init", 5120, NULL, 4, NULL);
 
-    /* 3. 消息总线 */
-    if (msg_bus_init(SERVER_URL, DEVICE_ID) != 0) {
-        ESP_LOGW(TAG, "消息总线初始化失败, 联网功能不可用");
-    } else {
-        msg_bus_on_recv(on_message);
-        net_ok = true;
-        voice_reply_say("联网成功");
-    }
-
-    /* 4. 传感器上报任务 */
-    if (net_ok) {
-        xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
-    }
-
-    /* 5. 自动模式扫风任务 (始终运行, 由 g_auto_running 控制是否转动) */
+    /* 4. 自动模式扫风任务 (始终运行, 由 g_auto_running 控制是否转动) */
     xTaskCreate(auto_sweep_task, "auto_sweep", 3072, NULL, 4, NULL);
 
-    ESP_LOGI(TAG, "系统就绪 (语音=%s, 联网=%s, 舵机x4=GPIO20-23)",
-             sr_ok ? "ON" : "OFF", net_ok ? "ON" : "OFF");
+    ESP_LOGI(TAG, "系统就绪 (语音=%s, 网络=后台连接中, 舵机x4=GPIO20-23)",
+             sr_ok ? "ON" : "OFF");
 }

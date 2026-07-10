@@ -52,3 +52,7 @@ python build_n_flash.py build reconf
 
 
 claude --resume 78bf2cab-6a38-45f9-b6fa-510d0a78a8f5 --dangerously-skip-permissions
+
+ nohup python /opt/smart-blinds/weather_service.py --city 南京 --interval 1800 > /opt/smart-blinds/weather.log 2>&1 &
+
+ 
