@@ -1,0 +1,79 @@
+===== 串口说明 =====
+
+串口号: COM11
+波特率: 115200 (idf.py monitor 默认)
+芯片: ESP32-P4 (revision v3.2)
+USB 模式: USB-Serial/JTAG
+
+===== 烧录命令 =====
+
+PowerShell (Windows):
+  .\build_ps.ps1     -- 编译
+  .\flash_ps.ps1     -- 烧录 (COM11)
+  .\monitor_ps.ps1   -- 串口监视
+
+手动:
+  idf.py build
+  idf.py -p COM11 flash
+  idf.py -p COM11 monitor
+
+===== LEDC (背光) =====
+
+| 功能       | Timer | Channel | GPIO  | 频率    | 分辨率 |
+|-----------|-------|---------|-------|---------|--------|
+| 屏幕背光   | 1     | 1       | 26    | 5 kHz   | 13-bit |
+
+===== MCPWM (舵机) =====
+
+| 功能       | Group | Timer | Operator | GPIO  | 频率   |
+|-----------|-------|-------|----------|-------|--------|
+| 舵机 1     | 0     | 0     | 0        | 20    | 50 Hz  |
+| 舵机 2     | 0     | 0     | 1        | 21    | 50 Hz  |
+| 舵机 3     | 0     | 0     | 2        | 22    | 50 Hz  |
+| 舵机 4     | 0     | 0     | 3        | 23    | 50 Hz  |
+
+注意: ESP32-P4 LEDC 所有 Timer 共享时钟分频器，不同频率会冲突。
+      舵机用 MCPWM 避免和背光 LEDC 冲突。
+
+===== GPIO 分配总览 =====
+
+| GPIO | 功能            | 备注                    |
+|------|-----------------|------------------------|
+| 7    | I2C SDA         | ES8311/SHT3x/BH1750/GT911 共享 |
+| 8    | I2C SCL         | 同上                    |
+| 9    | I2S DOUT        | ES8311 语音输出         |
+| 20   | 舵机 1 PWM      | LEDC Channel 1         |
+| 21   | 舵机 2 PWM      | LEDC Channel 2         |
+| 22   | 舵机 3 PWM      | LEDC Channel 3         |
+| 23   | 舵机 4 PWM      | LEDC Channel 4         |
+| 26   | 屏幕背光 PWM    | LEDC Channel 0         |
+| 27   | LCD RST         | EK79007 复位            |
+
+===== 显示/触摸 =====
+
+显示: EK79007 7" 1024x600 MIPI DSI (2-lane)
+触摸: GT911 I2C addr=0x5D
+LVGL: 600x1024 逻辑坐标 (90° CW 旋转)
+      物理(px,py) = (lv_y, 599 - lv_x)
+      触摸: lv_x = phy_y, lv_y = 1023 - phy_x
+
+===== WebSocket =====
+
+服务端: msg_bus (SERVER_URL 在 config.h)
+设备 ID: DEVICE_ID
+命令通过 g_cmd_queue 解耦 (10条队列)
+
+===== 故障排查 =====
+
+屏幕不亮:
+  - 检查 GPIO26 背光 PWM 是否正常
+  - LEDC Timer 0 Channel 0 不能被其他模块占用
+  - 确认 servo_manager 使用 Timer 1 (非 Timer 0)
+
+舵机不动:
+  - 检查对应 GPIO 的 LEDC Channel 是否冲突
+  - 舵机和背光不能共用 Channel 0
+
+触摸无反应:
+  - GT911 I2C addr=0x5D (INT 拉低时)
+  - 初始化顺序: display_init → lvgl_init → ui_init → lvgl_task → touch_init

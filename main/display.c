@@ -220,11 +220,11 @@ esp_err_t touch_init(void)
 
 esp_err_t display_init(void)
 {
-    /* 1. Backlight PWM on GPIO26 */
+    /* 1. Backlight PWM on GPIO26 (Timer 1 — Timer 0 is used internally by IDF) */
     ledc_timer_config_t ledc_timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_13_BIT,
-        .timer_num       = LEDC_TIMER_0,
+        .timer_num       = LEDC_TIMER_1,
         .freq_hz         = 5000,
         .clk_cfg         = LEDC_AUTO_CLK,
     };
@@ -233,8 +233,8 @@ esp_err_t display_init(void)
     ledc_channel_config_t ledc_ch = {
         .gpio_num   = DISPLAY_BL,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = LEDC_CHANNEL_0,
-        .timer_sel  = LEDC_TIMER_0,
+        .channel    = LEDC_CHANNEL_1,
+        .timer_sel  = LEDC_TIMER_1,
         .duty       = 8191,
         .hpoint     = 0,
     };

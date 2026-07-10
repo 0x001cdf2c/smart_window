@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Blinds Control</title>
+<style>
+  :root {
+    --bg: #f5f5f8;
+    --card: #ffffff;
+    --accent: #6c5ce7;
+    --green: #00b894;
+    --red: #e74c3c;
+    --text: #1a1a2e;
+    --muted: #9999b0;
+    --border: #e8e8f0;
+    --shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(108,92,231,0.05) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 20%, rgba(0,210,211,0.04) 0%, transparent 60%),
+      radial-gradient(ellipse at 50% 80%, rgba(246,184,0,0.03) 0%, transparent 60%);
+  }
+  .container {
+    width: 100%;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .logo {
+    width: 44px; height: 44px;
+    border-radius: 13px;
+    background: linear-gradient(135deg, var(--accent), #a29bfe);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    box-shadow: 0 8px 24px rgba(108,92,231,0.3);
+  }
+  .title { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+  .subtitle { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  .status-row { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .status-text { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  /* Toggle switch */
+  .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background: #ccc; border-radius: 24px; transition: 0.3s;
+  }
+  .toggle-slider:before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s;
+  }
+  input:checked + .toggle-slider { background: var(--green); }
+  input:checked + .toggle-slider:before { transform: translateX(20px); }
+  .reconnect-btn {
+    padding: 6px 12px; border-radius: 16px; border: 1px solid var(--accent);
+    background: transparent; color: var(--accent); font-size: 11px; font-weight: 600;
+    cursor: pointer; transition: all 0.25s; white-space: nowrap;
+  }
+  .reconnect-btn:hover { background: var(--accent); color: #fff; }
+  .scan-add-btn {
+    padding: 8px 16px; border-radius: 20px;
+    border: 1px dashed var(--accent);
+    background: transparent; color: var(--accent); font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.25s; white-space: nowrap;
+  }
+  .scan-add-btn:hover { background: rgba(108,92,231,0.08); }
+
+  /* ── Center-Axis Slat Gauge ── */
+  .angle-gauge-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 16px 20px 12px;
+    text-align: center;
+    box-shadow: var(--shadow);
+  }
+  .angle-gauge-wrap .gauge-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--muted); margin-bottom: 4px;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .auto-badge {
+    display: inline-block;
+    padding: 2px 10px; border-radius: 10px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    background: #e8e8f0; color: #8888a0;
+    transition: all 0.3s;
+  }
+  .auto-badge.on {
+    background: #d5f5e3; color: #27ae60;
+    box-shadow: 0 0 8px rgba(39,174,96,0.3);
+  }
+  canvas#angleGauge { display: block; margin: 0 auto; cursor: default; }
+  canvas#angleGauge.draggable { cursor: grab; }
+  canvas#angleGauge.dragging { cursor: grabbing; }
+
+  .angle-control-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 4px; padding: 0 4px;
+  }
+  .angle-mode-btn {
+    flex: 1;
+    padding: 8px 12px; border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.25s;
+  }
+  .angle-mode-btn.manual {
+    background: #fff3e0; border-color: #ffcc80; color: #e65100;
+  }
+  .angle-mode-btn.auto {
+    background: #d5f5e3; border-color: #81c784; color: #27ae60;
+  }
+  .angle-adjust-btn {
+    padding: 8px 20px; border-radius: 20px;
+    border: none;
+    background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+    color: #fff; font-size: 12px; font-weight: 700;
+    cursor: pointer; transition: all 0.25s;
+    box-shadow: 0 4px 12px rgba(108,92,231,0.3);
+  }
+  .angle-adjust-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(108,92,231,0.4); }
+  .angle-adjust-btn:active { transform: scale(0.96); }
+  .angle-adjust-btn:disabled {
+    background: #dcdce4; color: #999; cursor: not-allowed;
+    box-shadow: none; transform: none;
+  }
+
+  /* ── 3-column sensors ── */
+  .sensors-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .sensor-mini {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 16px 10px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    transition: transform 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  .sensor-mini:hover { transform: translateY(-2px); }
+  .sensor-mini::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    border-radius: 18px 18px 0 0;
+  }
+  .sensor-mini.temp::before { background: linear-gradient(90deg, #ff6b6b, #f9ca24); }
+  .sensor-mini.humi::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
+  .sensor-mini.light::before { background: linear-gradient(90deg, #f9ca24, #ff9f43); }
+  .sensor-mini .icon { font-size: 22px; margin-bottom: 4px; }
+  .sensor-mini .val {
+    font-size: 22px; font-weight: 700;
+    font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace;
+  }
+  .sensor-mini .unit { font-size: 11px; color: var(--muted); }
+  .sensor-mini .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+
+  /* Weather card */
+  .weather-card {
+    background: var(--card);
+    border-radius: 18px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    animation: slideIn 0.4s ease;
+  }
+  .weather-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+  }
+  .weather-icon { font-size: 32px; }
+  .weather-city { font-size: 16px; font-weight: 700; color: var(--text); }
+  .weather-desc { font-size: 12px; color: var(--muted); }
+  .weather-details {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  }
+  .weather-item {
+    text-align: center;
+    background: var(--bg);
+    border-radius: 12px;
+    padding: 10px 6px;
+  }
+  .weather-item-label {
+    font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;
+    display: block; margin-bottom: 4px;
+  }
+  .weather-item-val {
+    font-size: 16px; font-weight: 700;
+    font-family: 'SF Mono','JetBrains Mono','Consolas',monospace;
+  }
+  .weather-item-val.high { color: #e74c3c; }
+  .weather-item-val.low { color: #54a0ff; }
+
+  /* Section label */
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--muted); margin-bottom: -4px;
+  }
+
+  /* Command buttons */
+  .commands {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .cmd-btn {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    color: var(--text);
+    font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    transition: all 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .cmd-btn:hover {
+    background: #f8f8ff; border-color: var(--accent);
+    transform: translateY(-2px); box-shadow: 0 8px 24px rgba(108,92,231,0.12);
+  }
+  .cmd-btn:active { transform: scale(0.97); }
+  .cmd-btn .icon { font-size: 20px; flex-shrink: 0; }
+  .cmd-btn.full { grid-column: 1 / -1; }
+  .cmd-btn.primary {
+    background: linear-gradient(135deg, rgba(108,92,231,0.08), rgba(162,155,254,0.04));
+    border-color: rgba(108,92,231,0.25);
+  }
+
+  /* Response area */
+  .response-area {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 16px;
+    min-height: 60px;
+    box-shadow: var(--shadow);
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .response-area .placeholder {
+    color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0;
+  }
+  .response-msg {
+    font-size: 13px; line-height: 1.5;
+    padding: 6px 0;
+    border-bottom: 1px solid #eee;
+    animation: slideIn 0.3s ease;
+  }
+  .response-msg:last-child { border-bottom: none; }
+  .response-msg .ts {
+    font-size: 10px; color: #ccc; float: right; margin-top: 2px;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .updating { animation: pulse 0.3s ease; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">🏠</div>
+    <div>
+      <div class="title">智能窗帘</div>
+      <div class="subtitle" id="devId">blinds_001</div>
+    </div>
+    <div class="status-row">
+      <span class="status-text" id="statusText">未连接</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="connectToggle" onchange="onToggleChange()">
+        <span class="toggle-slider"></span>
+      </label>
+      <button class="reconnect-btn" id="reconnectBtn" onclick="doReconnect()">重新连接</button>
+    </div>
+  </div>
+
+  <!-- Angle Gauge: 360-degree rotation, center-axis slat -->
+  <div class="angle-gauge-wrap">
+    <div class="gauge-label">窗帘角度 <span class="auto-badge" id="autoBadge">手动</span></div>
+    <canvas id="angleGauge" width="320" height="320"></canvas>
+    <div class="angle-control-row">
+      <button class="angle-mode-btn manual" id="angleModeBtn" onclick="toggleAngleMode()">手动调节</button>
+      <button class="angle-adjust-btn" id="angleAdjustBtn" onclick="sendAngle()" disabled>调整</button>
+      <button class="scan-add-btn" id="scanAddBtn" onclick="doReconnect()">扫描添加</button>
+    </div>
+  </div>
+
+  <!-- 3-column sensors: temp, humidity, light -->
+  <div class="sensors-row">
+    <div class="sensor-mini temp">
+      <div class="icon">🌡️</div>
+      <div class="val" id="tempVal">--</div>
+      <div class="unit">°C</div>
+      <div class="lbl">温度</div>
+    </div>
+    <div class="sensor-mini humi">
+      <div class="icon">💧</div>
+      <div class="val" id="humiVal">--</div>
+      <div class="unit">%</div>
+      <div class="lbl">湿度</div>
+    </div>
+    <div class="sensor-mini light">
+      <div class="icon">☀️</div>
+      <div class="val" id="lightVal">--</div>
+      <div class="unit">lux</div>
+      <div class="lbl">光照</div>
+    </div>
+  </div>
+
+  <!-- Weather card -->
+  <div class="weather-card" id="weatherCard">
+    <div class="weather-header">
+      <span class="weather-icon" id="weatherIcon">🌤️</span>
+      <div>
+        <div class="weather-city" id="weatherCity">--</div>
+        <div class="weather-desc" id="weatherDesc">等待天气数据...</div>
+      </div>
+    </div>
+    <div class="weather-details">
+      <div class="weather-item">
+        <span class="weather-item-label">天气</span>
+        <span class="weather-item-val" id="weatherType">--</span>
+      </div>
+      <div class="weather-item">
+        <span class="weather-item-label">高温</span>
+        <span class="weather-item-val high" id="weatherHigh">--</span>
+      </div>
+      <div class="weather-item">
+        <span class="weather-item-label">低温</span>
+        <span class="weather-item-val low" id="weatherLow">--</span>
+      </div>
+      <div class="weather-item">
+        <span class="weather-item-label">降水</span>
+        <span class="weather-item-val" id="weatherRain">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Suggestion card -->
+  <div class="weather-card" id="suggestionCard">
+    <div class="weather-header">
+      <span class="weather-icon">🤖</span>
+      <div>
+        <div class="weather-city">AI 穿搭建议</div>
+        <div class="weather-desc" id="suggestionDesc">等待数据...</div>
+      </div>
+    </div>
+    <div class="weather-details" style="grid-template-columns: 1fr;">
+      <div class="weather-item">
+        <span class="weather-item-val" id="suggestionText" style="font-size:14px;font-family:'PingFang SC','Microsoft YaHei',sans-serif;">点击下方按钮获取建议</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Commands -->
+  <div class="section-label">命令</div>
+  <div class="commands">
+    <button class="cmd-btn" onclick="sendCmd('open_blinds')">
+      <span class="icon">🪟</span> 打开
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('close_blinds')">
+      <span class="icon">🪟</span> 关闭
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('set_temp', {target: 26})">
+      <span class="icon">🎯</span> 设置 26°C
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('weather_query')">
+      <span class="icon">🌤️</span> 查询天气
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('suggestion_query')">
+      <span class="icon">🤖</span> AI建议
+    </button>
+    <button class="cmd-btn full primary" onclick="sendCmd('status_report')">
+      <span class="icon">📊</span> 状态报告
+    </button>
+  </div>
+
+  <!-- Voice Commands -->
+  <div class="section-label">语音</div>
+  <div class="commands">
+    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '打开窗帘'})">
+      <span class="icon">🎤</span> 打开
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '关闭窗帘'})">
+      <span class="icon">🎤</span> 关闭
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '停止'})">
+      <span class="icon">🎤</span> 停止
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '设置为睡眠模式'})">
+      <span class="icon">🎤</span> 睡眠
+    </button>
+  </div>
+
+  <!-- Response -->
+  <div class="section-label">设备响应</div>
+  <div class="response-area" id="responseArea">
+    <div class="placeholder">等待设备响应...</div>
+  </div>
+</div>
+
+<script>
+const WS_URL = 'ws://47.105.45.239:8765';
+const DEVICE_ID = 'blinds_001';
+let ws = null;
+let reconnectTimer = null;
+let closeDebounce = null;
+let autoReconnect = true;
+let isAutoMode = false;
+let angleMode = 'auto';
+let manualAngle = 0;      // 0..180, 0 = closed/vertical
+let isDragging = false;
+let deviceMode = 'manual'; // synced from device
+let sendQueue = [];
+
+const statusText = document.getElementById('statusText');
+const connectToggle = document.getElementById('connectToggle');
+const reconnectBtn = document.getElementById('reconnectBtn');
+const responseArea = document.getElementById('responseArea');
+const tempVal = document.getElementById('tempVal');
+const humiVal = document.getElementById('humiVal');
+const lightVal = document.getElementById('lightVal');
+const autoBadge = document.getElementById('autoBadge');
+const gaugeCanvas = document.getElementById('angleGauge');
+const gaugeCtx = gaugeCanvas.getContext('2d');
+const angleModeBtn = document.getElementById('angleModeBtn');
+const angleAdjustBtn = document.getElementById('angleAdjustBtn');
+
+let currentAngle = null;
+
+/* ── Raw angle from touch (0-360°, up=0, CW increasing) ── */
+function rawTouchAngle(e) {
+  const rect = gaugeCanvas.getBoundingClientRect();
+  const cx_el = rect.left + rect.width / 2;
+  const cy_el = rect.top + rect.height / 2;
+
+  let cx, cy;
+  if (e.touches && e.touches.length > 0) { cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
+  else if (e.changedTouches && e.changedTouches.length > 0) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; }
+  else { cx = e.clientX; cy = e.clientY; }
+
+  const dx = cx - cx_el;
+  const dy = cy_el - cy;  // positive above center
+  let deg = Math.atan2(dx, dy) * 180 / Math.PI;  // up=0, right=90
+  if (deg < 0) deg += 360;
+  return deg;
+}
+
+let g_lastTouchDeg = 0;
+
+/* ── Gauge drag: incremental rotation (follows finger like a knob) ── */
+function onGaugeDown(e) {
+  if (angleMode !== 'manual') return;
+  e.preventDefault();
+  isDragging = true;
+  gaugeCanvas.classList.add('dragging');
+  g_lastTouchDeg = rawTouchAngle(e);
+  drawGauge(manualAngle, true);
+}
+
+function onGaugeMove(e) {
+  if (!isDragging) return;
+  e.preventDefault();
+  let cur = rawTouchAngle(e);
+  let delta = cur - g_lastTouchDeg;
+  // handle wraparound across 0°
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  manualAngle = Math.round(Math.min(Math.max(manualAngle + delta, 0), 180));
+  g_lastTouchDeg = cur;
+  drawGauge(manualAngle, true);
+}
+
+function onGaugeUp(e) {
+  if (!isDragging) return;
+  isDragging = false;
+  gaugeCanvas.classList.remove('dragging');
+}
+
+gaugeCanvas.addEventListener('mousedown', onGaugeDown);
+gaugeCanvas.addEventListener('mousemove', onGaugeMove);
+gaugeCanvas.addEventListener('mouseup', onGaugeUp);
+gaugeCanvas.addEventListener('mouseleave', onGaugeUp);
+gaugeCanvas.addEventListener('touchstart', onGaugeDown, {passive: false});
+gaugeCanvas.addEventListener('touchmove', onGaugeMove, {passive: false});
+gaugeCanvas.addEventListener('touchend', onGaugeUp);
+
+/* ── Toggle angle mode ── */
+function toggleAngleMode() {
+  if (angleMode === 'auto') {
+    angleMode = 'manual';
+    angleModeBtn.textContent = '自动跟随';
+    angleModeBtn.className = 'angle-mode-btn manual';
+    gaugeCanvas.classList.add('draggable');
+    angleAdjustBtn.disabled = false;
+    if (currentAngle !== null && currentAngle !== undefined) {
+      manualAngle = currentAngle;
+    }
+    drawGauge(manualAngle, true);
+    addResponse('system', '切换为手动调节模式');
+  } else {
+    angleMode = 'auto';
+    angleModeBtn.textContent = '手动调节';
+    angleModeBtn.className = 'angle-mode-btn auto';
+    gaugeCanvas.classList.remove('draggable');
+    angleAdjustBtn.disabled = true;
+    sendCmd('auto_mode');
+    drawGauge(currentAngle, false);
+    addResponse('system', '切换为自动跟随模式');
+  }
+}
+
+/* ── Send manual angle to device ── */
+function sendAngle() {
+  if (angleMode !== 'manual') return;
+  sendCmd('set_angle', {angle: manualAngle});
+  addResponse('sent', '设置角度 ' + manualAngle + '°');
+}
+
+/* ── Draw center-axis slat gauge ──
+   The slat rotates around its center, like a real blind blade.
+   0° = closed (slat horizontal), 90° = half open, 180° = fully reversed */
+function drawGauge(angle, manual) {
+  const w = gaugeCanvas.width;
+  const h = gaugeCanvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const ringR = 110;
+  const ctx = gaugeCtx;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Outer ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+  ctx.strokeStyle = '#e8e8f0';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Tick marks around the ring
+  for (let deg = 0; deg < 360; deg += 10) {
+    const major = deg % 30 === 0;
+    const rad = deg * Math.PI / 180;
+    const ox = cx + ringR * Math.cos(rad);
+    const oy = cy - ringR * Math.sin(rad);
+    const inner = ringR - (major ? 16 : 8);
+    const ix = cx + inner * Math.cos(rad);
+    const iy = cy - inner * Math.sin(rad);
+
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ix, iy);
+    ctx.strokeStyle = major ? '#aaa' : '#e0e0e8';
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.stroke();
+
+    if (major) {
+      const lx = cx + (ringR - 28) * Math.cos(rad);
+      const ly = cy - (ringR - 28) * Math.sin(rad);
+      const labelDeg = deg <= 180 ? deg : (360 - deg);
+      ctx.font = 'bold 11px "Segoe UI", "PingFang SC", sans-serif';
+      ctx.fillStyle = '#aaa';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelDeg + '°', lx, ly);
+    }
+  }
+
+  if (angle !== null && angle !== undefined) {
+    const rad = angle * Math.PI / 180;
+
+    // Slat blade — a rounded rectangle rotating on center axis
+    const bladeW = ringR * 1.7;
+    const bladeH = manual ? 8 : 7;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rad);
+
+    // Blade shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.12)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2;
+
+    // Blade body
+    const bx = -bladeW / 2;
+    const by = -bladeH / 2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bladeW, bladeH, bladeH / 2);
+    if (manual) {
+      const grad = ctx.createLinearGradient(0, -bladeH, 0, bladeH);
+      grad.addColorStop(0, '#ff9800');
+      grad.addColorStop(1, '#e65100');
+      ctx.fillStyle = grad;
+    } else {
+      const grad = ctx.createLinearGradient(0, -bladeH, 0, bladeH);
+      grad.addColorStop(0, '#6c5ce7');
+      grad.addColorStop(0.5, '#a29bfe');
+      grad.addColorStop(1, '#5f27cd');
+      ctx.fillStyle = grad;
+    }
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Center line through blade
+    ctx.beginPath();
+    ctx.moveTo(-bladeW / 2, 0);
+    ctx.lineTo(bladeW / 2, 0);
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.restore();
+
+    // Center hub (on top of blade)
+    ctx.beginPath();
+    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+    const hubGrad = ctx.createRadialGradient(cx, cy - 2, 0, cx, cy, 10);
+    hubGrad.addColorStop(0, '#fff');
+    hubGrad.addColorStop(0.4, '#eee');
+    hubGrad.addColorStop(1, '#ccc');
+    ctx.fillStyle = hubGrad;
+    ctx.fill();
+    ctx.strokeStyle = '#bbb';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Small center dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = manual ? '#bf360c' : '#5f27cd';
+    ctx.fill();
+  }
+
+  // Angle readout at bottom
+  ctx.font = 'bold 28px "SF Mono", "JetBrains Mono", "Consolas", monospace';
+  ctx.fillStyle = manual ? '#e65100' : '#1a1a2e';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const displayDeg = (angle !== null && angle !== undefined) ? Math.round(angle) : 0;
+  ctx.fillText(displayDeg + '°', cx, cy + ringR + 30);
+
+  // Mode label
+  ctx.font = 'bold 11px "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = deviceMode === 'auto' ? '#27ae60' : '#e65100';
+  ctx.textAlign = 'center';
+  ctx.fillText(deviceMode === 'auto' ? '[自动]' : '[手动]', cx, cy + ringR + 50);
+}
+
+function setOnline(on) {
+  connectToggle.checked = on;
+  statusText.textContent = on ? '已连接' : '未连接';
+  statusText.style.color = on ? 'var(--green)' : 'var(--muted)';
+  reconnectBtn.style.display = on ? 'none' : 'inline-block';
+}
+
+function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+  addResponse('system', '连接中...');
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    if (closeDebounce) { clearTimeout(closeDebounce); closeDebounce = null; }
+    setOnline(true);
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    ws.send(JSON.stringify({
+      type: 'register',
+      payload: { device_id: 'blinds_001', role: 'client' }
+    }));
+    // flush queued sends
+    if (sendQueue.length > 0) {
+      const q = sendQueue;
+      sendQueue = [];
+      q.forEach(m => { try { ws.send(JSON.stringify(m)); } catch(e) {} });
+      addResponse('system', '已发送 ' + q.length + ' 条缓存命令');
+    }
+    addResponse('system', '已连接');
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      handleMessage(msg);
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    if (closeDebounce) clearTimeout(closeDebounce);
+    closeDebounce = setTimeout(() => {
+      setOnline(false);
+      addResponse('system', '已断开');
+      if (autoReconnect) {
+        reconnectTimer = setTimeout(connect, 1000);
+      }
+    }, 200);
+  };
+
+  ws.onerror = () => {
+    console.log('WS error');
+  };
+}
+
+function disconnect() {
+  autoReconnect = false;
+  if (closeDebounce) { clearTimeout(closeDebounce); closeDebounce = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+  setOnline(false);
+  addResponse('system', '已手动断开');
+}
+
+function onToggleChange() {
+  if (connectToggle.checked) {
+    autoReconnect = true;
+    connect();
+  } else {
+    disconnect();
+  }
+}
+
+function doReconnect() {
+  autoReconnect = true;
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+  setOnline(false);
+  connect();
+}
+
+function weatherIconFor(code) {
+  const c = (code || '').toString();
+  if (c.includes('晴')) return '☀️';
+  if (c.includes('多云')) return '⛅';
+  if (c.includes('阴')) return '☁️';
+  if (c.includes('雨') || c.includes('阵雨')) return '🌧️';
+  if (c.includes('雷')) return '⛈️';
+  if (c.includes('雪')) return '🌨️';
+  if (c.includes('雾')) return '🌫️';
+  return '🌤️';
+}
+
+function handleMessage(msg) {
+  const pl = msg.payload || {};
+
+  // ── weather data ──
+  if (pl.type === 'weather') {
+    const card = document.getElementById('weatherCard');
+    card.style.display = 'block';
+    document.getElementById('weatherIcon').textContent = weatherIconFor(pl.weather);
+    document.getElementById('weatherCity').textContent = pl.city || '--';
+    document.getElementById('weatherDesc').textContent =
+      `${pl.weather || '--'}  ${pl.high || '--'}°/${pl.low || '--'}°`;
+    document.getElementById('weatherType').textContent = pl.weather || '--';
+    document.getElementById('weatherHigh').textContent = (pl.high !== undefined) ? pl.high + '°' : '--';
+    document.getElementById('weatherLow').textContent = (pl.low !== undefined) ? pl.low + '°' : '--';
+    document.getElementById('weatherRain').textContent =
+      (pl.rain_pct !== undefined) ? pl.rain_pct + '%' : '--';
+    return;
+  }
+
+  // ── suggestion data ──
+  if (pl.type === 'suggestion') {
+    document.getElementById('suggestionText').textContent = pl.text || '--';
+    document.getElementById('suggestionDesc').textContent = new Date().toLocaleTimeString() + ' 更新';
+    return;
+  }
+
+  if (pl.temp !== undefined || pl.humidity !== undefined || pl.light !== undefined || pl.angle !== undefined) {
+    if (pl.temp !== undefined) {
+      tempVal.textContent = pl.temp;
+      tempVal.parentElement.classList.add('updating');
+      setTimeout(() => tempVal.parentElement.classList.remove('updating'), 300);
+    }
+    if (pl.humidity !== undefined) {
+      humiVal.textContent = pl.humidity;
+      humiVal.parentElement.classList.add('updating');
+      setTimeout(() => humiVal.parentElement.classList.remove('updating'), 300);
+    }
+    if (pl.light !== undefined) {
+      lightVal.textContent = pl.light;
+      lightVal.parentElement.classList.add('updating');
+      setTimeout(() => lightVal.parentElement.classList.remove('updating'), 300);
+    }
+    if (pl.angle !== undefined) {
+      currentAngle = Math.round(Number(pl.angle));
+      if (angleMode === 'auto') {
+        drawGauge(currentAngle, false);
+      }
+    }
+    if (pl.mode !== undefined) {
+      deviceMode = pl.mode;
+      setAutoMode(deviceMode === 'auto');
+      if (angleMode === 'auto') {
+        drawGauge(currentAngle, false);
+      }
+    }
+  }
+
+  if (pl.cmd && pl.status) {
+    addResponse('device', pl.cmd + ' → ' + pl.status);
+    return;
+  }
+
+  if (typeof pl === 'string') {
+    addResponse('device', pl);
+    return;
+  }
+
+  if (pl.data) {
+    addResponse('device', pl.data);
+  }
+
+  if (msg.type === 'registered') {
+    addResponse('system', '已注册: ' + (pl.device_id || ''));
+  }
+}
+
+function addResponse(from, text) {
+  const el = document.createElement('div');
+  el.className = 'response-msg';
+  const prefix = from === 'sent' ? '📤' : from === 'system' ? '🔌' : '📩';
+  el.innerHTML = `<span>${prefix} ${escapeHtml(text)}</span><span class="ts">${new Date().toLocaleTimeString()}</span>`;
+  const placeholder = responseArea.querySelector('.placeholder');
+  if (placeholder) placeholder.remove();
+  responseArea.prepend(el);
+}
+
+function setAutoMode(on) {
+  isAutoMode = on;
+  autoBadge.textContent = on ? '自动' : '手动';
+  autoBadge.className = 'auto-badge' + (on ? ' on' : '');
+}
+
+function sendCmd(cmd, params = {}) {
+  if (cmd === 'auto_mode') setAutoMode(true);
+  else if (cmd === 'open_blinds' || cmd === 'close_blinds' || cmd === 'set_temp') setAutoMode(false);
+
+  const msg = {
+    type: 'send',
+    payload: JSON.stringify({ type: cmd, ...params })
+  };
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    sendQueue.push(msg);
+    addResponse('system', '已缓存: ' + cmd + ' (等待重连)');
+    return;
+  }
+
+  try {
+    ws.send(JSON.stringify(msg));
+  } catch (e) {
+    sendQueue.push(msg);
+    addResponse('system', '发送失败, 已缓存');
+    return;
+  }
+  addResponse('sent', cmd + (Object.keys(params).length ? ' ' + JSON.stringify(params) : ''));
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Initial draw
+drawGauge(0, false);
+
+connect();
+</script>
+</body>
+</html>

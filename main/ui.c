@@ -23,6 +23,10 @@ static lv_obj_t *g_lbl_conn    = NULL;
 static lv_obj_t *g_led_conn    = NULL;
 static lv_obj_t *g_btn_manual  = NULL;
 static lv_obj_t *g_btn_auto    = NULL;
+static lv_obj_t *g_btn_cw      = NULL;
+static lv_obj_t *g_btn_ccw     = NULL;
+static lv_obj_t *g_btn_open    = NULL;
+static lv_obj_t *g_btn_close   = NULL;
 static lv_obj_t *g_lbl_temp    = NULL;
 static lv_obj_t *g_lbl_humi    = NULL;
 static lv_obj_t *g_lbl_light   = NULL;
@@ -32,6 +36,22 @@ static lv_obj_t *g_lbl_w_high  = NULL;
 static lv_obj_t *g_lbl_w_low   = NULL;
 static lv_obj_t *g_lbl_w_rain  = NULL;
 static lv_obj_t *g_lbl_ai      = NULL;
+
+static ui_action_handler_t g_action_handler = NULL;
+
+void ui_set_action_handler(ui_action_handler_t handler)
+{
+    g_action_handler = handler;
+}
+
+/* ── Button event callback ── */
+static void on_btn_event(lv_event_t *e)
+{
+    const char *action = (const char *)lv_event_get_user_data(e);
+    if (g_action_handler) {
+        g_action_handler(action);
+    }
+}
 
 /* ── Helpers ── */
 static lv_obj_t *card_create(lv_obj_t *parent, int y, int h)
@@ -111,6 +131,7 @@ static void mode_toggle_create(lv_obj_t *screen)
     lv_obj_set_style_radius(g_btn_manual, 20, 0);
     lv_obj_set_style_bg_color(g_btn_manual, C_ORANGE, 0);
     lv_obj_align(g_btn_manual, LV_ALIGN_RIGHT_MID, -100, 0);
+    lv_obj_add_event_cb(g_btn_manual, on_btn_event, LV_EVENT_CLICKED, (void *)"manual");
     lv_obj_t *bl = label_make(g_btn_manual, "MANUAL", lv_color_hex(0xFFFFFF), 14);
     lv_obj_center(bl);
 
@@ -120,6 +141,7 @@ static void mode_toggle_create(lv_obj_t *screen)
     lv_obj_set_style_bg_color(g_btn_auto, lv_color_hex(0xD5F5E3), 0);
     lv_obj_set_style_shadow_width(g_btn_auto, 0, 0);
     lv_obj_align(g_btn_auto, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_add_event_cb(g_btn_auto, on_btn_event, LV_EVENT_CLICKED, (void *)"auto");
     bl = label_make(g_btn_auto, "AUTO", C_GREEN, 14);
     lv_obj_center(bl);
 }
@@ -131,33 +153,35 @@ static void servo_buttons_create(lv_obj_t *screen)
     lv_obj_set_style_pad_all(card, 15, 0);
 
     /* CW button */
-    lv_obj_t *btn_cw = lv_btn_create(card);
-    lv_obj_set_size(btn_cw, 265, 130);
-    lv_obj_set_pos(btn_cw, 10, 15);
-    lv_obj_set_style_radius(btn_cw, 16, 0);
-    lv_obj_set_style_bg_color(btn_cw, C_ACCENT, 0);
-    lv_obj_set_style_shadow_width(btn_cw, 10, 0);
-    lv_obj_set_style_shadow_color(btn_cw, C_ACCENT, 0);
-    lv_obj_set_style_shadow_opa(btn_cw, 80, 0);
+    g_btn_cw = lv_btn_create(card);
+    lv_obj_set_size(g_btn_cw, 265, 130);
+    lv_obj_set_pos(g_btn_cw, 10, 15);
+    lv_obj_set_style_radius(g_btn_cw, 16, 0);
+    lv_obj_set_style_bg_color(g_btn_cw, C_ACCENT, 0);
+    lv_obj_set_style_shadow_width(g_btn_cw, 10, 0);
+    lv_obj_set_style_shadow_color(g_btn_cw, C_ACCENT, 0);
+    lv_obj_set_style_shadow_opa(g_btn_cw, 80, 0);
+    lv_obj_add_event_cb(g_btn_cw, on_btn_event, LV_EVENT_CLICKED, (void *)"cw");
 
-    lv_obj_t *l = lv_label_create(btn_cw);
-    lv_label_set_text(l, "CW");  // clockwise
+    lv_obj_t *l = lv_label_create(g_btn_cw);
+    lv_label_set_text(l, "CW");
     lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
     lv_obj_center(l);
 
     /* CCW button */
-    lv_obj_t *btn_ccw = lv_btn_create(card);
-    lv_obj_set_size(btn_ccw, 265, 130);
-    lv_obj_set_pos(btn_ccw, 285, 15);
-    lv_obj_set_style_radius(btn_ccw, 16, 0);
-    lv_obj_set_style_bg_color(btn_ccw, lv_color_hex(0xa29bfe), 0);
-    lv_obj_set_style_shadow_width(btn_ccw, 10, 0);
-    lv_obj_set_style_shadow_color(btn_ccw, lv_color_hex(0xa29bfe), 0);
-    lv_obj_set_style_shadow_opa(btn_ccw, 80, 0);
+    g_btn_ccw = lv_btn_create(card);
+    lv_obj_set_size(g_btn_ccw, 265, 130);
+    lv_obj_set_pos(g_btn_ccw, 285, 15);
+    lv_obj_set_style_radius(g_btn_ccw, 16, 0);
+    lv_obj_set_style_bg_color(g_btn_ccw, lv_color_hex(0xa29bfe), 0);
+    lv_obj_set_style_shadow_width(g_btn_ccw, 10, 0);
+    lv_obj_set_style_shadow_color(g_btn_ccw, lv_color_hex(0xa29bfe), 0);
+    lv_obj_set_style_shadow_opa(g_btn_ccw, 80, 0);
+    lv_obj_add_event_cb(g_btn_ccw, on_btn_event, LV_EVENT_CLICKED, (void *)"ccw");
 
-    l = lv_label_create(btn_ccw);
-    lv_label_set_text(l, "CCW");  // counter-clockwise
+    l = lv_label_create(g_btn_ccw);
+    lv_label_set_text(l, "CCW");
     lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
     lv_obj_center(l);
@@ -264,27 +288,29 @@ static void commands_create(lv_obj_t *screen)
     lv_obj_t *card = card_create(screen, 860, 90);
 
     /* Open */
-    lv_obj_t *btn_open = lv_btn_create(card);
-    lv_obj_set_size(btn_open, 265, 60);
-    lv_obj_set_pos(btn_open, 15, 15);
-    lv_obj_set_style_radius(btn_open, 16, 0);
-    lv_obj_set_style_bg_color(btn_open, C_GREEN, 0);
-    lv_obj_set_style_shadow_width(btn_open, 6, 0);
-    lv_obj_set_style_shadow_color(btn_open, C_GREEN, 0);
-    lv_obj_set_style_shadow_opa(btn_open, 60, 0);
-    lv_obj_t *l = label_make(btn_open, "OPEN", lv_color_hex(0xFFFFFF), 24);
+    g_btn_open = lv_btn_create(card);
+    lv_obj_set_size(g_btn_open, 265, 60);
+    lv_obj_set_pos(g_btn_open, 15, 15);
+    lv_obj_set_style_radius(g_btn_open, 16, 0);
+    lv_obj_set_style_bg_color(g_btn_open, C_GREEN, 0);
+    lv_obj_set_style_shadow_width(g_btn_open, 6, 0);
+    lv_obj_set_style_shadow_color(g_btn_open, C_GREEN, 0);
+    lv_obj_set_style_shadow_opa(g_btn_open, 60, 0);
+    lv_obj_add_event_cb(g_btn_open, on_btn_event, LV_EVENT_CLICKED, (void *)"open");
+    lv_obj_t *l = label_make(g_btn_open, "OPEN", lv_color_hex(0xFFFFFF), 24);
     lv_obj_center(l);
 
     /* Close */
-    lv_obj_t *btn_close = lv_btn_create(card);
-    lv_obj_set_size(btn_close, 265, 60);
-    lv_obj_set_pos(btn_close, 295, 15);
-    lv_obj_set_style_radius(btn_close, 16, 0);
-    lv_obj_set_style_bg_color(btn_close, C_RED, 0);
-    lv_obj_set_style_shadow_width(btn_close, 6, 0);
-    lv_obj_set_style_shadow_color(btn_close, C_RED, 0);
-    lv_obj_set_style_shadow_opa(btn_close, 60, 0);
-    l = label_make(btn_close, "CLOSE", lv_color_hex(0xFFFFFF), 24);
+    g_btn_close = lv_btn_create(card);
+    lv_obj_set_size(g_btn_close, 265, 60);
+    lv_obj_set_pos(g_btn_close, 295, 15);
+    lv_obj_set_style_radius(g_btn_close, 16, 0);
+    lv_obj_set_style_bg_color(g_btn_close, C_RED, 0);
+    lv_obj_set_style_shadow_width(g_btn_close, 6, 0);
+    lv_obj_set_style_shadow_color(g_btn_close, C_RED, 0);
+    lv_obj_set_style_shadow_opa(g_btn_close, 60, 0);
+    lv_obj_add_event_cb(g_btn_close, on_btn_event, LV_EVENT_CLICKED, (void *)"close");
+    l = label_make(g_btn_close, "CLOSE", lv_color_hex(0xFFFFFF), 24);
     lv_obj_center(l);
 }
 

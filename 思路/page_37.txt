@@ -1,0 +1,53 @@
+Chapter 3. 寿命终止开发板
+其排线两侧的金属触点在不同面上。
+应用示例
+以下为开发板的应用示例：
+• ESP_Brookesia Phone - 展示了一个类似安卓的界面，使用ESP_Brookesia，利用开发板上的MIPI-DSI、
+MIPI-CSI、ESP32-C6、SD 卡和音频接口运行多个应用程序，为高效的多媒体应用开发提供了基础。
+• LVGL Demo v8 - 演示如何在配备7 英寸LCD 屏幕的ESP32-P4-Function-EV-Board 上移植LVGL v8，
+并使用LVGL 的内置演示进行性能测试，为基于LVGL v8 开发应用程序提供基础。
+• LVGL Demo v9 - 演示如何在ESP32-P4-Function-EV-Board 上移植LVGL v9 并使用LVGL 内置的演
+示进行性能测试，作为基于LVGL v9 开发应用程序的基础。
+更多示例及最新更新请参阅examples 文件夹。
+如需尝试应用示例或开发自定义应用，请参照开始开发应用小节中的步骤进行操作。
+开始开发应用
+通电前，请确保ESP32-P4-Function-EV-Board 完好无损。
+必备硬件
+• ESP32-P4-Function-EV-Board
+• USB 数据线
+• 电脑（Windows、Linux 或macOS）
+备注: 请确保使用优质USB 数据线。部分数据线仅可用于充电，无法用于数据传输和编程。
+可选硬件
+• MicroSD 卡
+硬件设置
+使用USB 数据线将ESP32-P4-Function-EV 连接到电脑，可通过任何一个USB Type-C 端口为
+开发板供电。建议使用USB 串口/JTAG 接口烧录固件和调试。
+如需使用显示屏，请按照以下步骤连接显示屏：
+1. 用短铜柱将开发板固定在LCD 屏幕适配板中心的四个螺母柱上。
+2. 用屏幕排线（反向线序）连接LCD 屏幕适配板的J3 排针和开发板的MIPI DSI 连接器。LCD 屏幕
+适配板已与LCD 连接。
+3. 用杜邦线将LCD 屏幕适配板J6 排针的RST_LCD 引脚连接到开发板J1 排针的GPIO27 引脚。使用
+时RST_LCD 由ESP32-P4 芯片控制，具体引脚可由软件设置，默认为GPIO27。
+4. 用杜邦线将LCD 屏幕适配板J6 排针的PWM 引脚连接到开发板J1 排针的GPIO26 引脚。使用时
+PWM 由ESP32-P4 芯片控制，具体引脚可由软件设置，默认为GPIO26。
+5. 推荐使用外接USB 供电连接LCD 屏幕适配板J1 排针对屏幕供电。如果条件不允许，也可以在开
+发板供电充足的情况下，使用杜邦线将LCD 屏幕适配板的5V 与GND 管脚连接到开发板的J1 排
+针的5V 与GND 引脚。
+6. 将长铜柱固定在LCD 屏幕适配板四周的四个螺母柱上，可以将LCD 立放。
+连接关系如下表所示：
+LCD 屏幕适配板
+ESP32-P4-Function-EV
+J3 排针
+MIPI DSI 连接器
+J6 排针RST_LCD 引脚
+J1 排针GPIO27 引脚
+J6 排针PWM 引脚
+J1 排针GPIO26 引脚
+J6 排针5V 引脚
+J1 排针5V 引脚
+J6 排针GND 引脚
+J1 排针GND 引脚
+Espressif Systems
+34
+Submit Document Feedback
+Release master

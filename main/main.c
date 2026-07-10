@@ -32,6 +32,46 @@ static bool g_auto_running = false;
 static void on_message(const char *type, const char *data, uint16_t data_len);
 static void sensor_task(void *arg);
 
+/* ── UI 按钮动作处理: 由 ui.c 的事件回调触发 ── */
+static void on_ui_action(const char *action)
+{
+    ESP_LOGI(TAG, "[UI动作] %s", action);
+
+    if (strcmp(action, "open") == 0) {
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        servo_set_angle(0.0f);
+        ui_update_mode(false);
+    } else if (strcmp(action, "close") == 0) {
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        servo_set_angle(90.0f);
+        ui_update_mode(false);
+    } else if (strcmp(action, "cw") == 0) {
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        float a = servo_get_angle() + 10.0f;
+        if (a > 180.0f) a = 180.0f;
+        servo_set_angle(a);
+        ui_update_mode(false);
+    } else if (strcmp(action, "ccw") == 0) {
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        float a = servo_get_angle() - 10.0f;
+        if (a < 0.0f) a = 0.0f;
+        servo_set_angle(a);
+        ui_update_mode(false);
+    } else if (strcmp(action, "manual") == 0) {
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        ui_update_mode(false);
+    } else if (strcmp(action, "auto") == 0) {
+        g_auto_running = true;
+        servo_set_mode(SERVO_MODE_AUTO);
+        ui_update_mode(true);
+    }
+}
+
 /* ── 网络初始化任务 (后台运行, 避免 app_main 阻塞导致 IDLE 看门狗超时) ── */
 static void network_init_task(void *arg)
 {
@@ -368,6 +408,7 @@ void app_main(void)
         display_lvgl_init();
         ESP_LOGI(TAG, "LVGL init done, starting UI...");
         ui_init();
+        ui_set_action_handler(on_ui_action);
         ESP_LOGI(TAG, "UI done, starting LVGL task...");
         display_lvgl_task_start();  /* start LVGL rendering AFTER UI is built */
         ESP_LOGI(TAG, "LVGL task started");

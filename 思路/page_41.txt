@@ -1,0 +1,6 @@
+Chapter 3. 寿命终止开发板
+图6: ESP32-P4-Function-EV-Board
+Espressif Systems
+38
+Submit Document Feedback
+Release master

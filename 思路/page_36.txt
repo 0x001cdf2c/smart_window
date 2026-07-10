@@ -1,0 +1,65 @@
+Chapter 3. 寿命终止开发板
+组件编
+号
+主要组件
+介绍
+19
+Power Switch（电源
+开关）
+电源开关。拨向ON 一侧，开发板连接5 V 电源上电；拨离ON 一侧，
+开发板断开5 V 电源掉电。
+20
+Switch（开关）
+TPS2051C 是一款USB 电源开关，提供500 mA 输出电流限制。
+21
+MIPI CSI Connec-
+tor（MIPI CSI 连接
+器）
+FPC 连接器1.0K-GT-15PB，用以连接外接摄像头模组，实现图像传输，
+详情请见相关文档中的1.0K-GT-15PB 规格书。适配的FPC 规格：间
+距1.0 mm，管脚宽度0.7 mm，厚度0.3 mm，管脚数量15。
+22
+Buck Converter（降
+压转换器）
+用于VDD_HP 电源的降压型DC-DC 转换器。
+23
+ESP32-P4
+ESP32-P4 是一款高性能MCU，支持超大片上内存，具有强大的图像
+和语音处理能力。
+24
+40 MHz XTAL
+40 MHz 晶振，用于提供系统时钟。
+25
+32.768 kHz XTAL
+32.768 kHz 晶振，可提供Deep-sleep 下使用的低功耗时钟。
+26
+MIPI DSI Connec-
+tor（MIPI DSI 连接
+器）
+FPC 连接器1.0K-GT-15PB，用以连接LCD 扩展板，详情请见相关文
+档中的1.0K-GT-15PB 规格书。适配的FPC 规格：间距1.0 mm，管脚
+宽度0.7 mm，厚度0.3 mm，管脚数量15。
+27
+SPI flash
+通过SPI 接口与ESP32-P4 芯片连接，大小为16 MB。
+28
+MicroSD Card Slot
+（MicroSD 卡槽）
+本开发板支持4-bit 模式的MicroSD 卡，可以存储或播放MicroSD 卡中
+的音频文件。
+开发板配件
+ESP32-P4-Function-EV-Board 的包装盒中包含以下可选配件：
+• 显示屏及其附件（可选）
+– 7 英寸MIPI DSI 电容式触摸屏，分辨率为1024 x 600 像素
+– LCD 屏幕适配板
+– 附件包，包括杜邦线、屏幕排线、长铜柱（长度为20 mm）、短铜柱（长度为8 mm）
+• 摄像头及其附件（可选）
+– 200 万像素MIPI CSI 接口摄像头
+– 摄像头适配板
+– 摄像头排线
+图4: 正向和反向线序排线
+备注: 同向线序的排线为摄像头排线，其排线两侧的金属触点在同一面上；反向线序的排线为屏幕排线，
+Espressif Systems
+33
+Submit Document Feedback
+Release master

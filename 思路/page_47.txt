@@ -1,0 +1,164 @@
+Chapter 3. 寿命终止开发板
+表2 – 接上页
+序号
+名称
+类型Page 44, 1
+功能
+7
+23
+I/O/T
+GPIO23
+8
+37
+I/O/T
+U0TXD, GPIO37
+9
+GND
+GND
+接地
+10
+38
+I/O/T
+U0RXD, GPIO38
+11
+21
+I/O/T
+GPIO21
+12
+22
+I/O/T
+GPIO22
+13
+20
+I/O/T
+GPIO20
+14
+GND
+GND
+接地
+15
+6
+I/O/T
+GPIO6
+16
+5
+I/O/T
+GPIO5
+17
+3V3
+P
+3.3 V 电源
+18
+4
+I/O/T
+GPIO4
+19
+3
+I/O/T
+GPIO3
+20
+GND
+GND
+接地
+21
+2
+I/O/T
+GPIO2
+22
+NC(1)
+I/O/T
+GPIO12
+23
+NC(0)
+I/O/T
+GPIO02
+24
+36
+I/O/T
+GPIO36
+25
+GND
+GND
+接地
+26
+32
+I/O/T
+GPIO32
+27
+24
+I/O/T
+GPIO24
+28
+25
+I/O/T
+GPIO25
+29
+33
+I/O/T
+GPIO33
+30
+GND
+GND
+接地
+31
+26
+I/O/T
+GPIO26
+32
+54
+I/O/T
+GPIO54
+33
+48
+I/O/T
+GPIO48
+34
+GND
+GND
+接地
+35
+53
+I/O/T
+GPIO53
+36
+46
+I/O/T
+GPIO46
+37
+47
+I/O/T
+GPIO47
+38
+27
+I/O/T
+GPIO27
+39
+GND
+GND
+接地
+40
+NC(45)
+I/O/T
+GPIO453
+J1
+硬件版本
+该开发板为最新硬件，尚未有历史版本。
+相关文档
+请前往esp-dev-kits 文档HTML 网页版本下载以下文档。
+• ESP32-P4-Function-EV-Board v1.4 原理图(PDF)
+• ESP32-P4-Function-EV-Board v1.4 PCB 布局图(PDF)
+• ESP32-P4-Function-EV-Board v1.4 尺寸图(PDF)
+• ESP32-P4-Function-EV-Board v1.4 尺寸图源文件(DXF) - 可使用Autodesk Viewer 查看
+• 1.0K-GT-15PB 规格书(PDF)
+• 摄像头规格书(PDF)
+• 显示屏规格书(PDF)
+• 显示屏驱动芯片EK73217BCGA 规格书(PDF)
+• 显示屏驱动芯片EK79007AD 规格书(PDF)
+• 显示屏适配板原理图(PDF)
+1 P：电源；I：输入；O：输出；T：可设置为高阻。
+2 为启用GPIO0 与GPIO1，可将R61、R59 分别移动到R199、R197 处以禁用XTAL_32K 功能。
+3 为启用GPIO45，可将R231 移动到R100 以禁用SD_PWRn 功能。
+Espressif Systems
+44
+Submit Document Feedback
+Release master

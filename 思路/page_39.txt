@@ -1,0 +1,178 @@
+Chapter 3. 寿命终止开发板
+序号
+名称
+类型Page 36, 1
+功能
+1
+3V3
+P
+3.3 V 电源
+2
+5V
+P
+5 V 电源
+3
+7
+I/O/T
+GPIO7
+4
+5V
+P
+5 V 电源
+5
+8
+I/O/T
+GPIO8
+6
+GND
+GND
+接地
+7
+23
+I/O/T
+GPIO23
+8
+37
+I/O/T
+U0TXD, GPIO37
+9
+GND
+GND
+接地
+10
+38
+I/O/T
+U0RXD, GPIO38
+11
+21
+I/O/T
+GPIO21
+12
+22
+I/O/T
+GPIO22
+13
+20
+I/O/T
+GPIO20
+14
+GND
+GND
+接地
+15
+6
+I/O/T
+GPIO6
+16
+5
+I/O/T
+GPIO5
+17
+3V3
+P
+3.3 V 电源
+18
+4
+I/O/T
+GPIO4
+19
+3
+I/O/T
+GPIO3
+20
+GND
+GND
+接地
+21
+2
+I/O/T
+GPIO2
+22
+NC(1)
+I/O/T
+GPIO12
+23
+NC(0)
+I/O/T
+GPIO02
+24
+36
+I/O/T
+GPIO36
+25
+GND
+GND
+接地
+26
+32
+I/O/T
+GPIO32
+27
+NC
+–
+空管脚
+28
+NC
+–
+空管脚
+29
+33
+I/O/T
+GPIO33
+30
+GND
+GND
+接地
+31
+26
+I/O/T
+GPIO26
+32
+54
+I/O/T
+GPIO54
+33
+48
+I/O/T
+GPIO48
+34
+GND
+GND
+接地
+35
+53
+I/O/T
+GPIO53
+36
+46
+I/O/T
+GPIO46
+37
+47
+I/O/T
+GPIO47
+38
+27
+I/O/T
+GPIO27
+39
+GND
+GND
+接地
+40
+NC(45)
+I/O/T
+GPIO453
+J1
+硬件版本
+首次发布
+备注: 开发板v1.52 版本相较于v1.4 版本的主要改进包括：将调试用的USB-to-UART Type-C 接口替换
+为ESP32-P4 芯片内置的USB 串口/JTAG 接口，并新增了全速USB OTG 至Type-C 的接口引出。IO24、
+IO25 管脚不再引出到排针。
+1 P：电源；I：输入；O：输出；T：可设置为高阻。
+2 为启用GPIO0 与GPIO1，可将R61、R59 分别移动到R199、R197 处以禁用XTAL_32K 功能。
+3 为启用GPIO45，可将R231 移动到R100 以禁用SD_PWRn 功能。
+Espressif Systems
+36
+Submit Document Feedback
+Release master

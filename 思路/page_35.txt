@@ -1,0 +1,81 @@
+Chapter 3. 寿命终止开发板
+图3: ESP32-P4-Function-EV-Board - 背面（点击放大）
+组件编
+号
+主要组件
+介绍
+1
+J1
+所有可用GPIO 管脚均已引出至排针J1，详细信息请见排针。
+2
+ESP32-C6 Module
+Programming Con-
+nector（ESP32-C6
+模组固件烧录接
+口）
+该接口可配合使用ESP-Prog 或其他UART 工具为ESP32-C6 模组烧录
+固件。
+3
+ESP32-C6-MINI-1
+Module（ESP32-
+C6-MINI-1
+模
+组）
+ESP32-C6-MINI-1 模组用于该开发板的Wi-Fi 和蓝牙通信。
+4
+Microphone（麦克
+风）
+板载麦克风，连接至Audio Codec Chip 接口。
+5
+Reset Button（Reset
+键）
+复位按键。
+6
+Audio Codec Chip
+（音频编解码芯片）
+音频编解码器芯片ES8311 是一种低功耗单声道音频编解码器，包含
+单通道ADC、单通道DAC、低噪声前置放大器、耳机驱动器、数字音
+效、模拟混音和增益功能。它通过I2S 和I2C 总线与ESP32-P4 芯片连
+接，以提供独立于音频应用程序的硬件音频处理。
+7
+Speaker
+Output
+Port（扬声器输出
+端口）
+该输出端口用于连接扬声器。最高输出功率可以驱动4 Ω 3 W 扬声器，
+引脚间距为2.00 mm/0.08”。
+8
+Audio PA Chip（音
+频功率放大器）
+NS4150 是一款低EMI、3 W 单声道D 类音频功率放大器，用于放大来
+自音频编解码芯片的音频信号，以驱动扬声器。
+9
+5 V to 3.3 V LDO（5
+V 转3.3 V LDO）
+电源转换器，输入5 V，输出3.3 V。
+10
+BOOT
+Button
+（BOOT 键）
+启动模式控制按键，保持按住BOOT 键的同时按一下Reset 键，ESP-P4
+将重新启动并进入“固件下载”模式，这时可以通过USB 串口/JTAG
+接口下载固件到板载SPI flash 中。
+11
+Ethernet PHY IC
+以太网PHY 芯片，与ESP32-P4 EMAC RMII 接口和RJ45 以太网模块
+端口连接。
+12
+Buck Converter（降
+压转换器）
+用于3.3 V 电源的降压型DC-DC 转换器。
+13
+5 V Power-on LED
+（5 V 电源指示灯）
+开发板通过任一USB Type-C 接口连接电源后，该指示灯亮起。
+以太网接
+支持
+自适应
+Espressif Systems
+32
+Submit Document Feedback
+Release master

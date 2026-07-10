@@ -1,0 +1,12 @@
+Chapter 3. 寿命终止开发板
+• 相关文档：列出了相关文档的链接。
+入门指南
+本小节将简要介绍ESP32-P4-Function-EV-Board，说明如何在ESP32-P4-Function-EV-Board 上烧录固件及
+相关准备工作。
+图2: ESP32-P4-Function-EV-Board - 正面（点击放大）
+组件介绍
+下面从J1 开始按照顺时针的顺序依次介绍开发板正面和背面的主要组件。
+Espressif Systems
+31
+Submit Document Feedback
+Release master

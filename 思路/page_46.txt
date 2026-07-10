@@ -1,0 +1,50 @@
+Chapter 3. 寿命终止开发板
+• 如需使用摄像头，请将摄像头排线（同向线序）连接至摄像头适配板和开发板的MIPI CSI 连接器。
+软件设置
+请前往ESP-IDF 快速入门，查看如何快速设置开发环境，将应用程序烧录至您的开发板。
+硬件参考
+功能框图
+ESP32-P4-Function-EV-Board 的主要组件和连接方式如下图所示。
+图10: ESP32-P4-Function-EV-Board v1.4（点击放大）
+电源选项
+可通过以下接口为开发板供电：
+• USB 2.0 Type-C 接口
+• USB 电源输入接口
+• USB 转UART 接口
+如果用于调试的USB 数据线无法提供足够的电流，可通过空闲的USB Type-C 接口连接电源适配器。
+排针
+下表列出了开发板排针J1 的名称和功能，排针的名称如图ESP32-P4-Function-EV-Board - 正面（点
+击放大）所示，排针的序号与ESP32-P4-Function-EV-Board v1.4 原理图一致。
+序号
+名称
+类型Page 44, 1
+功能
+1
+3V3
+P
+3.3 V 电源
+2
+5V
+P
+5 V 电源
+3
+7
+I/O/T
+GPIO7
+4
+5V
+P
+5 V 电源
+5
+8
+I/O/T
+GPIO8
+6
+GND
+GND
+接地
+续下页
+Espressif Systems
+43
+Submit Document Feedback
+Release master
