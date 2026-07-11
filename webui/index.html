@@ -286,6 +286,35 @@
     50% { opacity: 0.5; }
   }
   .updating { animation: pulse 0.3s ease; }
+
+  /* ── Camera ── */
+  .camera-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+  .camera-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  }
+  .camera-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 16/9;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .camera-wrap img {
+    width: 100%; height: 100%; object-fit: contain;
+    transition: opacity 0.3s;
+  }
+  .camera-placeholder {
+    position: absolute;
+    color: #666; font-size: 13px;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -304,6 +333,21 @@
         <span class="toggle-slider"></span>
       </label>
       <button class="reconnect-btn" id="reconnectBtn" onclick="doReconnect()">重新连接</button>
+    </div>
+  </div>
+
+  <!-- Camera Stream -->
+  <div class="camera-card" id="cameraCard">
+    <div class="camera-header">
+      <span class="section-label" style="margin-bottom:0">摄像头</span>
+      <input type="text" id="cameraIP" placeholder="设备IP地址" value="192.168.1.100"
+        style="margin-left:auto;padding:6px 10px;border:1px solid var(--border);border-radius:8px;
+        font-size:12px;width:140px;background:var(--bg);color:var(--text);">
+      <button class="reconnect-btn" onclick="updateCamera()" style="margin-left:6px;">连接</button>
+    </div>
+    <div class="camera-wrap">
+      <img id="cameraFeed" src="" alt="Camera Offline" onerror="this.style.opacity='0.3'">
+      <div class="camera-placeholder" id="cameraPlaceholder">输入设备 IP 并点击连接</div>
     </div>
   </div>
 
@@ -897,6 +941,21 @@ function sendCmd(cmd, params = {}) {
     return;
   }
   addResponse('sent', cmd + (Object.keys(params).length ? ' ' + JSON.stringify(params) : ''));
+}
+
+function updateCamera() {
+  const ip = document.getElementById('cameraIP').value.trim();
+  const img = document.getElementById('cameraFeed');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  if (!ip) return;
+  img.src = 'http://' + ip + '/frame?t=' + Date.now();
+  img.style.opacity = '1';
+  placeholder.style.display = 'none';
+  // Refresh every 1 second
+  if (window._camTimer) clearInterval(window._camTimer);
+  window._camTimer = setInterval(function() {
+    img.src = 'http://' + ip + '/frame?t=' + Date.now();
+  }, 1000);
 }
 
 function escapeHtml(s) {

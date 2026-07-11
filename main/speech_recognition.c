@@ -5,10 +5,10 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/i2s_std.h"
-#include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "es8311.h"
+#include "i2c_bus.h"
 #include "esp_afe_sr_models.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_mn_iface.h"
@@ -28,10 +28,7 @@ static const char *TAG = "SR";
 #define I2S_DOUT  GPIO_NUM_9    /* ES8311 DSDIN 播放用 */
 
 /* ── ES8311 I2C 控制 ── */
-#define ES8311_I2C_PORT    I2C_NUM_0
-#define ES8311_I2C_SDA     GPIO_NUM_7
-#define ES8311_I2C_SCL     GPIO_NUM_8
-#define ES8311_I2C_ADDR    ES8311_ADDRRES_0
+#define ES8311_I2C_ADDR    ES8311_ADDRESS_0
 
 /* ── PA 功放使能 ── */
 #define PA_CTRL_GPIO       GPIO_NUM_53
@@ -66,20 +63,26 @@ static bool mn_active = false;
 /* ── ES8311 初始化 (使用 espressif/es8311 库, 匹配 Waveshare 参考代码) ── */
 static void es8311_codec_init(void)
 {
-    /* I2C 初始化 */
-    i2c_config_t i2c_cfg = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = ES8311_I2C_SDA,
-        .scl_io_num = ES8311_I2C_SCL,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 100000,
+    i2c_master_bus_handle_t bus_handle = i2c_bus_get_handle();
+    if (!bus_handle) {
+        ESP_LOGE(TAG, "I2C bus not initialized");
+        return;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ES8311_I2C_ADDR,
+        .scl_speed_hz = 100000,
     };
-    ESP_ERROR_CHECK(i2c_param_config(ES8311_I2C_PORT, &i2c_cfg));
-    ESP_ERROR_CHECK(i2c_driver_install(ES8311_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0));
+    i2c_master_dev_handle_t es_i2c_dev = NULL;
+    esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &es_i2c_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311 I2C device add failed: %s", esp_err_to_name(ret));
+        return;
+    }
 
     /* 创建 ES8311 句柄 */
-    es8311_hdl = es8311_create(ES8311_I2C_PORT, ES8311_I2C_ADDR);
+    es8311_hdl = es8311_create(es_i2c_dev);
     if (!es8311_hdl) {
         ESP_LOGE(TAG, "es8311_create 失败");
         return;
@@ -96,7 +99,7 @@ static void es8311_codec_init(void)
     };
 
     /* 初始化 ES8311 */
-    esp_err_t ret = es8311_init(es8311_hdl, &es_clk,
+    ret = es8311_init(es8311_hdl, &es_clk,
                                  ES8311_RESOLUTION_16,  /* ADC 16-bit */
                                  ES8311_RESOLUTION_16); /* DAC 16-bit */
     if (ret != ESP_OK) {

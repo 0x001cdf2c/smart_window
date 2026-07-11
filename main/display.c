@@ -6,7 +6,8 @@
 #include "esp_timer.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "i2c_bus.h"
 #include "esp_ldo_regulator.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
@@ -52,43 +53,48 @@ static int g_dirty_x1, g_dirty_y1, g_dirty_x2, g_dirty_y2;
 static bool g_dirty = false;
 
 /* ── GT911 Touch ── */
-#define TOUCH_I2C_PORT   I2C_NUM_0
 #define TOUCH_RST_PIN    2
 #define TOUCH_INT_PIN    3
 #define TOUCH_ADDR       0x5D
 
+static i2c_master_dev_handle_t s_touch_dev = NULL;
+
 static esp_err_t gt911_read_reg(uint16_t reg, uint8_t *data, size_t len)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TOUCH_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, (reg >> 8) & 0xFF, true);
-    i2c_master_write_byte(cmd, reg & 0xFF, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TOUCH_ADDR << 1) | I2C_MASTER_READ, true);
-    if (len > 0) {
-        if (len > 1) {
-            i2c_master_read(cmd, data, len - 1, I2C_MASTER_ACK);
+    if (!s_touch_dev) return ESP_FAIL;
+    static int err_count = 0;
+    /* GT911 does not play well with i2c_master_transmit_receive (repeated START).
+       Use separate write-then-read: write register address, STOP, then read data. */
+    uint8_t wbuf[2] = {(reg >> 8) & 0xFF, reg & 0xFF};
+    esp_err_t ret = i2c_master_transmit(s_touch_dev, wbuf, 2, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        if (err_count < 5) {
+            ESP_LOGE(TAG, "GT911 read: transmit(reg=0x%04X) failed: %s", reg, esp_err_to_name(ret));
+            err_count++;
         }
-        i2c_master_read(cmd, data + len - 1, 1, I2C_MASTER_NACK);
+        return ret;
     }
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(TOUCH_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-    i2c_cmd_link_delete(cmd);
+    vTaskDelay(pdMS_TO_TICKS(1));  /* let GT911 latch the register address */
+    ret = i2c_master_receive(s_touch_dev, data, len, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        if (err_count < 5) {
+            ESP_LOGE(TAG, "GT911 read: receive(reg=0x%04X, len=%d) failed: %s", reg, (int)len, esp_err_to_name(ret));
+            err_count++;
+        }
+    }
     return ret;
 }
 
 static esp_err_t gt911_write_reg(uint16_t reg, uint8_t data)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TOUCH_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, (reg >> 8) & 0xFF, true);
-    i2c_master_write_byte(cmd, reg & 0xFF, true);
-    i2c_master_write_byte(cmd, data, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(TOUCH_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-    i2c_cmd_link_delete(cmd);
+    if (!s_touch_dev) return ESP_FAIL;
+    static int err_count = 0;
+    uint8_t buf[3] = {(reg >> 8) & 0xFF, reg & 0xFF, data};
+    esp_err_t ret = i2c_master_transmit(s_touch_dev, buf, 3, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK && err_count < 5) {
+        ESP_LOGE(TAG, "GT911 write: transmit(reg=0x%04X) failed: %s", reg, esp_err_to_name(ret));
+        err_count++;
+    }
     return ret;
 }
 
@@ -160,7 +166,13 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 
 esp_err_t touch_init(void)
 {
-    /* Step 1: Hold INT low during reset → GT911 I2C addr = 0x5D */
+    i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+    if (!bus) {
+        ESP_LOGE(TAG, "I2C bus not initialized for touch");
+        return ESP_FAIL;
+    }
+
+    /* ── GT911 reset (exact sequence from working commit 1e397b0) ── */
     gpio_config_t io_cfg = {
         .pin_bit_mask = (1ULL << TOUCH_RST_PIN) | (1ULL << TOUCH_INT_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -171,11 +183,11 @@ esp_err_t touch_init(void)
     gpio_config(&io_cfg);
     gpio_set_level(TOUCH_INT_PIN, 0);
     gpio_set_level(TOUCH_RST_PIN, 0);
-    vTaskDelay(pdMS_TO_TICKS(1));
+    vTaskDelay(pdMS_TO_TICKS(1));   /* 0ms at 100Hz — kept for exact parity */
     gpio_set_level(TOUCH_RST_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(10));  /* 10ms for GT911 to stabilize */
 
-    /* Step 2: Switch INT to input (float) — GT911 drives low when ready */
+    /* Switch INT to input with pullup — GT911 drives low when ready */
     gpio_config_t int_cfg = {
         .pin_bit_mask = (1ULL << TOUCH_INT_PIN),
         .mode = GPIO_MODE_INPUT,
@@ -186,7 +198,18 @@ esp_err_t touch_init(void)
     gpio_config(&int_cfg);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* Step 3: Read product ID to verify */
+    /* ── Add GT911 I2C device ── */
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = TOUCH_ADDR,
+        .scl_speed_hz    = 100000,
+    };
+    if (i2c_master_bus_add_device(bus, &dev_cfg, &s_touch_dev) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to add GT911 I2C device");
+        s_touch_dev = NULL;
+    }
+
+    /* Read product ID */
     uint8_t pid[4] = {0};
     if (gt911_read_reg(0x8140, pid, 4) == ESP_OK) {
         ESP_LOGI(TAG, "GT911 Product ID: %c%c%c%c", pid[0], pid[1], pid[2], pid[3]);
@@ -194,27 +217,25 @@ esp_err_t touch_init(void)
         ESP_LOGW(TAG, "GT911 product ID read failed, continuing...");
     }
 
-    /* Step 4: Set resolution config (X=1024, Y=600) — skip full checksum */
-    {
-        uint8_t cfg_ver = 0;
-        if (gt911_read_reg(0x8047, &cfg_ver, 1) == ESP_OK) {
-            ESP_LOGI(TAG, "GT911 config version: %d", cfg_ver);
-        }
-        gt911_write_reg(0x8048, 0x00);  /* X resolution low  → 1024 */
-        gt911_write_reg(0x8049, 0x04);  /* X resolution high */
-        gt911_write_reg(0x804A, 0x58);  /* Y resolution low  → 600 */
-        gt911_write_reg(0x804B, 0x02);  /* Y resolution high */
-        gt911_write_reg(0x804C, 0x01);  /* touch number = 1 */
-        ESP_LOGI(TAG, "GT911 config: 1024x600 (no checksum update)");
-    }
+    /* ── Set resolution config ── */
+    uint8_t cfg_ver = 0;
+    gt911_read_reg(0x8047, &cfg_ver, 1);
+    ESP_LOGI(TAG, "GT911 config version: %d", cfg_ver);
 
-    /* Step 5: LVGL input device */
+    gt911_write_reg(0x8048, 0x00);  /* X res low  → 1024 */
+    gt911_write_reg(0x8049, 0x04);  /* X res high */
+    gt911_write_reg(0x804A, 0x58);  /* Y res low  → 600 */
+    gt911_write_reg(0x804B, 0x02);  /* Y res high */
+    gt911_write_reg(0x804C, 0x01);  /* touch number = 1 */
+    ESP_LOGI(TAG, "GT911 config: 1024x600");
+
+    /* ── LVGL input device ── */
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touch_read_cb);
 
-    ESP_LOGI(TAG, "GT911 touch init OK (I2C 0x%02X, RST=%d, INT=%d)",
-             TOUCH_ADDR, TOUCH_RST_PIN, TOUCH_INT_PIN);
+    ESP_LOGI(TAG, "GT911 touch init OK (RST=%d, INT=%d)",
+             TOUCH_RST_PIN, TOUCH_INT_PIN);
     return ESP_OK;
 }
 
@@ -275,9 +296,19 @@ esp_err_t display_init(void)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_ek79007(g_dbi_io, &panel_cfg, &g_panel));
 
-    /* 7. Reset -> init (DPI panel auto-starts after DSI init, no disp_on_off needed) */
+    /* 7. Reset -> init */
     ESP_ERROR_CHECK(esp_lcd_panel_reset(g_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(g_panel));
+
+    /* 8. Backlight ON (LEDC PWM at 100% + direct GPIO drive as fallback) */
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 8191);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    gpio_set_direction(DISPLAY_BL, GPIO_MODE_OUTPUT);
+    gpio_set_level(DISPLAY_BL, 1);
+    ESP_LOGI(TAG, "Backlight GPIO%d set HIGH (LEDC 100%% + GPIO)", DISPLAY_BL);
+
+    /* 9. Try disp_on_off (supported by DPI panel, not EK79007 wrapper) */
+    esp_lcd_panel_disp_on_off(g_panel, true);
 
     ESP_LOGI(TAG, "EK79007 MIPI DSI 1024x600 init OK");
     return ESP_OK;
@@ -435,7 +466,7 @@ static void lvgl_task(void *arg)
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(16));  /* >=1 tick at 100Hz to feed IDLE1 watchdog */
     }
 }
 

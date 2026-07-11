@@ -18,6 +18,9 @@
 #include "bh1750.h"
 #include "display.h"
 #include "ui.h"
+#include "camera_capture.h"
+#include "http_server_cam.h"
+#include "i2c_bus.h"
 
 static const char *TAG = "main";
 
@@ -97,6 +100,14 @@ static void network_init_task(void *arg)
     display_lvgl_unlock();
 
     voice_reply_say("联网成功");
+
+    /* 摄像头 + HTTP 视频流 (网络就绪后启动) */
+    if (camera_capture_init() == ESP_OK) {
+        http_server_cam_start();
+        ESP_LOGI(TAG, "摄像头视频流已启动");
+    } else {
+        ESP_LOGW(TAG, "摄像头初始化失败");
+    }
 
     /* 传感器上报任务 (网络就绪后启动) */
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
@@ -402,24 +413,40 @@ void app_main(void)
         ESP_LOGW(TAG, "舵机初始化失败");
     }
 
-    /* 0b. 显示屏 (EK79007 7" 1024x600 MIPI DSI) */
+    /* ── Phase 1: I2C bus + Display ── */
+    i2c_bus_init();
+
+    /* Quick I2C scan using i2c_master_probe */
+    {
+        i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+        int found = 0;
+        ESP_LOGI(TAG, "I2C scan start...");
+        for (uint8_t addr = 1; addr < 127; addr++) {
+            if (i2c_master_probe(bus, addr, 10) == ESP_OK) {
+                ESP_LOGI(TAG, "I2C device at 0x%02X (%d)", addr, addr);
+                found++;
+            }
+        }
+        ESP_LOGI(TAG, "I2C scan done: %d device(s) found", found);
+    }
+
     if (display_init() == ESP_OK) {
         ESP_LOGI(TAG, "display OK, starting LVGL...");
         display_lvgl_init();
         ESP_LOGI(TAG, "LVGL init done, starting UI...");
         ui_init();
         ui_set_action_handler(on_ui_action);
-        ESP_LOGI(TAG, "UI done, starting LVGL task...");
-        display_lvgl_task_start();  /* start LVGL rendering AFTER UI is built */
+        ESP_LOGI(TAG, "UI done");
+        display_lvgl_task_start();  /* start LVGL rendering on CPU1 */
         ESP_LOGI(TAG, "LVGL task started");
-        touch_init();  /* GT911 touch must init AFTER LVGL display is created */
     } else {
         ESP_LOGW(TAG, "显示屏初始化失败");
     }
-    vTaskDelay(pdMS_TO_TICKS(50));  /* let CPU1 LVGL render; feed CPU0 watchdog */
 
-    /* 1. 语音识别 (初始化 I2C + ES8311, 加载模型) */
-    vTaskDelay(pdMS_TO_TICKS(10));
+    /* ── Phase 2: GT911 touch (BEFORE any I2C traffic from ES8311) ── */
+    touch_init();
+
+    /* ── Phase 3: Speech recognition (ES8311 — first I2C user after touch reset) ── */
     if (sr_init() != 0) {
         ESP_LOGW(TAG, "语音识别初始化失败");
     } else {
@@ -432,19 +459,17 @@ void app_main(void)
         ESP_LOGI(TAG, "语音识别就绪");
     }
 
-    /* 2. 温湿度传感器 (I2C 与 ES8311 共享, 需在 SR 之后) */
+    /* ── Phase 4: I2C sensors ── */
     if (!sht3x_init()) {
-        ESP_LOGW(TAG, "SHT3x 初始化失败, 温湿度数据不可用");
-    } else {
-        ESP_LOGI(TAG, "SHT3x 温湿度传感器就绪");
+        ESP_LOGW(TAG, "SHT3x 初始化失败");
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    /* 2b. 光照传感器 (BH1750, I2C 0x23) */
     if (!bh1750_init()) {
-        ESP_LOGW(TAG, "BH1750 初始化失败, 光照数据不可用");
+        ESP_LOGW(TAG, "BH1750 初始化失败");
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
+    ESP_LOGI(TAG, "Sensors ready");
+
+    /* I2C bus handle stays valid — all devices share it.
+       Sensors+touch already have their handles; camera SCCB creates its own later. */
 
     /* 3. 网络初始化 (后台任务, 避免阻塞 app_main 导致 IDLE0 看门狗超时) */
     xTaskCreate(network_init_task, "net_init", 5120, NULL, 4, NULL);

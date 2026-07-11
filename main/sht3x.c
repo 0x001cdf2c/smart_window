@@ -1,15 +1,14 @@
 #include "sht3x.h"
-#include "driver/i2c.h"
+#include "i2c_bus.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "SHT3X";
 
-#define SHT3X_I2C_PORT I2C_NUM_0
-
-static bool    s_ready = false;
-static uint8_t s_addr  = 0;
+static bool                     s_ready = false;
+static i2c_master_dev_handle_t  s_dev   = NULL;
 
 static uint8_t crc8(const uint8_t *data, int len)
 {
@@ -24,91 +23,66 @@ static uint8_t crc8(const uint8_t *data, int len)
 
 bool sht3x_init(void)
 {
-    /* 1. 先探测 SHT3x, 避免先扫 0x23 (BH1750) 把它扰乱了 */
-    ESP_LOGI(TAG, "探测 SHT3x (0x44/0x45)...");
+    i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+    if (!bus) {
+        ESP_LOGE(TAG, "I2C bus not initialized");
+        return false;
+    }
+
     uint8_t addrs[] = {0x44, 0x45};
-    esp_err_t ret;
 
     for (int i = 0; i < 2; i++) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (addrs[i] << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-        ret = i2c_master_cmd_begin(SHT3X_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-        i2c_cmd_link_delete(cmd);
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address  = addrs[i],
+            .scl_speed_hz    = 100000,
+        };
+        i2c_master_dev_handle_t dev = NULL;
+        if (i2c_master_bus_add_device(bus, &dev_cfg, &dev) != ESP_OK) {
+            continue;
+        }
 
+        /* Probe: send soft reset command, check for ACK */
+        uint8_t reset_cmd[2] = {0x30, 0xA2};
+        esp_err_t ret = i2c_master_transmit(dev, reset_cmd, 2, pdMS_TO_TICKS(100));
         if (ret == ESP_OK) {
-            /* 软复位 */
-            cmd = i2c_cmd_link_create();
-            i2c_master_start(cmd);
-            i2c_master_write_byte(cmd, (addrs[i] << 1) | I2C_MASTER_WRITE, true);
-            i2c_master_write_byte(cmd, 0x30, true);
-            i2c_master_write_byte(cmd, 0xA2, true);
-            i2c_master_stop(cmd);
-            i2c_master_cmd_begin(SHT3X_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-            i2c_cmd_link_delete(cmd);
-            vTaskDelay(pdMS_TO_TICKS(2));
-
-            s_addr = addrs[i];
+            s_dev = dev;
             s_ready = true;
-            ESP_LOGI(TAG, "SHT3x 在 0x%02X 就绪", s_addr);
-        } else {
-            ESP_LOGW(TAG, "0x%02X 无响应: %s", addrs[i], esp_err_to_name(ret));
+            vTaskDelay(pdMS_TO_TICKS(2));
+            ESP_LOGI(TAG, "SHT3x found at 0x%02X", addrs[i]);
+            break;
         }
+        /* Wrong address, remove device */
+        i2c_master_bus_rm_device(dev);
     }
-
-    /* 2. 全总线扫描 (仅做信息输出) */
-    ESP_LOGI(TAG, "I2C 总线扫描 ...");
-    int detected = 0;
-    for (uint8_t addr = 3; addr < 0x78; addr++) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-        ret = i2c_master_cmd_begin(SHT3X_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-        i2c_cmd_link_delete(cmd);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "  发现: 0x%02X", addr);
-            detected++;
-        }
-    }
-    ESP_LOGI(TAG, "扫描完成, 共 %d 个设备", detected);
 
     if (!s_ready) {
-        ESP_LOGE(TAG, "SHT3x 未找到 (0x44/0x45 均无响应)");
+        ESP_LOGW(TAG, "SHT3x not found (0x44/0x45 both unresponsive)");
+        return false;
     }
-    return s_ready;
+
+    ESP_LOGI(TAG, "SHT3x ready");
+    return true;
 }
 
 bool sht3x_read(sht3x_data_t *out)
 {
-    if (!s_ready || !s_addr) return false;
+    if (!s_ready || !s_dev) return false;
 
-    /* Trigger single-shot, high repeatability */
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (s_addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, 0x2C, true);
-    i2c_master_write_byte(cmd, 0x06, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(SHT3X_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-    i2c_cmd_link_delete(cmd);
+    /* Trigger single-shot measurement, high repeatability */
+    uint8_t cmd[2] = {0x2C, 0x06};
+    esp_err_t ret = i2c_master_transmit(s_dev, cmd, 2, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) return false;
 
-    vTaskDelay(pdMS_TO_TICKS(20)); /* 15ms measurement time */
+    vTaskDelay(pdMS_TO_TICKS(20));
 
+    /* Read 6 bytes: T(2) + CRC + RH(2) + CRC */
     uint8_t buf[6] = {0};
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (s_addr << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, buf, 6, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    ret = i2c_master_cmd_begin(SHT3X_I2C_PORT, cmd, pdMS_TO_TICKS(20));
-    i2c_cmd_link_delete(cmd);
+    ret = i2c_master_receive(s_dev, buf, 6, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) return false;
 
     if (crc8(buf, 2) != buf[2] || crc8(buf + 3, 2) != buf[5]) {
-        ESP_LOGW(TAG, "CRC 校验失败");
+        ESP_LOGW(TAG, "CRC check failed");
         return false;
     }
 
