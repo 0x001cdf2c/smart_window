@@ -21,6 +21,7 @@
 #include "camera_capture.h"
 #include "http_server_cam.h"
 #include "i2c_bus.h"
+#include <mbedtls/base64.h>
 
 static const char *TAG = "main";
 
@@ -34,6 +35,7 @@ static bool g_auto_running = false;
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
 static void sensor_task(void *arg);
+static void video_stream_task(void *arg);
 
 /* ── UI 按钮动作处理: 由 ui.c 的事件回调触发 ── */
 static void on_ui_action(const char *action)
@@ -105,6 +107,8 @@ static void network_init_task(void *arg)
     if (camera_capture_init() == ESP_OK) {
         http_server_cam_start();
         ESP_LOGI(TAG, "摄像头视频流已启动");
+        /* 视频流转发 (通过 WebSocket 推送到云端, 局域网外可看) */
+        xTaskCreate(video_stream_task, "video_stream", 6144, NULL, 5, NULL);
     } else {
         ESP_LOGW(TAG, "摄像头初始化失败");
     }
@@ -206,9 +210,6 @@ static void handle_web_command(const char *json_str)
             servo_set_mode(SERVO_MODE_MANUAL);
             servo_set_angle(angle);
             ESP_LOGI(TAG, "手动设置角度: %.1f°", angle);
-            char buf[48];
-            snprintf(buf, sizeof(buf), "角度已调至%d度", (int)angle);
-            voice_reply_say(buf);
         }
 
     } else if (strcmp(cmd, "auto_mode") == 0) {
@@ -390,6 +391,76 @@ static void speech_task(void *arg)
     }
 }
 
+/* ── 视频流转发任务: 通过 WebSocket 推送到云端服务器 ── */
+#define VIDEO_FRAME_INTERVAL_MS  50    /* ~15-20 fps */
+#define VIDEO_JPG_BUF_SIZE       (128 * 1024)
+#define VIDEO_B64_BUF_SIZE       (192 * 1024)
+#define VC_CHUNK_SIZE            3072
+
+static void video_stream_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    uint8_t *jpg_buf = heap_caps_malloc(VIDEO_JPG_BUF_SIZE,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *b64_buf = heap_caps_malloc(VIDEO_B64_BUF_SIZE,
+                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *chunk_msg = heap_caps_malloc(VC_CHUNK_SIZE + 256,
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (!jpg_buf || !b64_buf || !chunk_msg) {
+        ESP_LOGE(TAG, "video buf alloc failed");
+        free(jpg_buf); free(b64_buf); free(chunk_msg);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int frame_seq = 0;
+    while (1) {
+        if (!msg_bus_is_connected()) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        size_t jpg_len = 0;
+        if (camera_get_jpg_copy(jpg_buf, VIDEO_JPG_BUF_SIZE, &jpg_len) != ESP_OK || jpg_len == 0) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        size_t b64_len = 0;
+        if (mbedtls_base64_encode((unsigned char *)b64_buf, VIDEO_B64_BUF_SIZE,
+                                  &b64_len, jpg_buf, jpg_len) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(VIDEO_FRAME_INTERVAL_MS));
+            continue;
+        }
+
+        int total = (int)((b64_len + VC_CHUNK_SIZE - 1) / VC_CHUNK_SIZE);
+        for (int ci = 0; ci < total; ci++) {
+            int off = ci * VC_CHUNK_SIZE;
+            int sz = (int)(b64_len - off);
+            if (sz > VC_CHUNK_SIZE) sz = VC_CHUNK_SIZE;
+
+            /* Build chunk JSON: header + base64 data + suffix */
+            int hdr_len = snprintf(chunk_msg, 256,
+                "{\"type\":\"send\",\"payload\":{\"type\":\"vc\",\"s\":%d,\"c\":%d,\"t\":%d,\"d\":\"",
+                frame_seq, ci, total);
+            memcpy(chunk_msg + hdr_len, b64_buf + off, sz);
+            memcpy(chunk_msg + hdr_len + sz, "\"}}", 3);
+            int msg_len = hdr_len + sz + 3;
+
+            msg_bus_send_raw_msg(chunk_msg, msg_len);
+        }
+
+        if (frame_seq < 3 || frame_seq % 30 == 0) {
+            ESP_LOGI(TAG, "frame #%d: %u B JPEG, %u B b64, %d chunks",
+                     frame_seq, (unsigned)jpg_len, (unsigned)b64_len, total);
+        }
+        frame_seq++;
+        vTaskDelay(pdMS_TO_TICKS(VIDEO_FRAME_INTERVAL_MS));
+    }
+}
+
 void app_main(void)
 {
     nvs_flash_init();
@@ -453,11 +524,12 @@ void app_main(void)
         sr_on_wake_cb(on_wake_word);
         sr_on_command_cb(on_speech_command);
         sr_start();
-        voice_reply_init(GPIO_NUM_9);
         xTaskCreate(speech_task, "speech", 4096, NULL, 4, NULL);
         sr_ok = true;
         ESP_LOGI(TAG, "语音识别就绪");
     }
+    /* TTS 播放独立于语音识别 — ES8311/I2S 已在 sr_init 中初始化 */
+    voice_reply_init(GPIO_NUM_9);
 
     /* ── Phase 4: I2C sensors ── */
     if (!sht3x_init()) {

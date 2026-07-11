@@ -41,6 +41,20 @@ void msg_bus_on_recv(msg_bus_callback_t cb);
  */
 void msg_bus_poll(void);
 
+/**
+ * 检查 WebSocket 是否已连接
+ * @return true 已连接, false 未连接
+ */
+bool msg_bus_is_connected(void);
+
+/**
+ * 发送原始 JSON 消息 (已构造好的完整消息)
+ * @param msg    完整的 JSON 消息字符串
+ * @param len    消息长度
+ * @return 0 成功, -1 失败
+ */
+int msg_bus_send_raw_msg(const char *msg, int len);
+
 #ifdef __cplusplus
 }
 #endif

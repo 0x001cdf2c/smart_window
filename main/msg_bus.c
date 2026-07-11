@@ -471,3 +471,16 @@ void msg_bus_poll(void)
 {
     /* esp_websocket_client 内部有自己的任务, 这里放上层自定义轮询 */
 }
+
+bool msg_bus_is_connected(void)
+{
+    if (!g_ws || !g_evt) return false;
+    return (xEventGroupGetBits(g_evt) & BIT_WS_CONNECTED) != 0;
+}
+
+int msg_bus_send_raw_msg(const char *msg, int len)
+{
+    if (!g_ws) return -1;
+    int ret = esp_websocket_client_send_text(g_ws, msg, len, pdMS_TO_TICKS(5000));
+    return (ret > 0) ? 0 : -1;
+}

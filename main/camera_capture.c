@@ -143,7 +143,7 @@ static void camera_capture_task(void *arg)
                     .height = FRAME_HEIGHT,
                     .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
                     .sub_sample = JPEG_DOWN_SAMPLING_YUV422,
-                    .image_quality = 60,
+                    .image_quality = 40,
                 };
                 uint32_t out_size = 0;
                 esp_err_t jpg_ret = jpeg_encoder_process(s_jpeg_enc, &enc_cfg,

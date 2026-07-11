@@ -336,18 +336,16 @@
     </div>
   </div>
 
-  <!-- Camera Stream -->
+  <!-- Camera Stream (via WebSocket relay, works outside LAN) -->
   <div class="camera-card" id="cameraCard">
     <div class="camera-header">
       <span class="section-label" style="margin-bottom:0">摄像头</span>
-      <input type="text" id="cameraIP" placeholder="设备IP地址" value="192.168.1.100"
-        style="margin-left:auto;padding:6px 10px;border:1px solid var(--border);border-radius:8px;
-        font-size:12px;width:140px;background:var(--bg);color:var(--text);">
-      <button class="reconnect-btn" onclick="updateCamera()" style="margin-left:6px;">连接</button>
+      <span id="camStatus" style="margin-left:auto;font-size:11px;color:var(--muted);">等待视频流...</span>
     </div>
     <div class="camera-wrap">
-      <img id="cameraFeed" src="" alt="Camera Offline" onerror="this.style.opacity='0.3'">
-      <div class="camera-placeholder" id="cameraPlaceholder">输入设备 IP 并点击连接</div>
+      <img id="cameraFeed" src="" alt="Camera" onerror="this.style.opacity='0.3'"
+           style="display:none;">
+      <div class="camera-placeholder" id="cameraPlaceholder">等待设备推送视频流...</div>
     </div>
   </div>
 
@@ -829,6 +827,40 @@ function weatherIconFor(code) {
 function handleMessage(msg) {
   const pl = msg.payload || {};
 
+  // ── video chunk (WebSocket relay, works outside LAN) ──
+  if (pl.type === 'vc') {
+    const s = pl.s, c = pl.c, t = pl.t, d = pl.d;
+    if (!window._vcFrames) window._vcFrames = {};
+    if (!window._vcFrames[s]) window._vcFrames[s] = { chunks: new Array(t), count: 0 };
+    const f = window._vcFrames[s];
+    if (!f.chunks[c]) {
+      f.chunks[c] = d;
+      f.count++;
+      // cleanup old frames
+      const keys = Object.keys(window._vcFrames);
+      if (keys.length > 5) {
+        const oldest = Math.min(...keys.map(Number));
+        delete window._vcFrames[oldest];
+      }
+    }
+    if (f.count === t) {
+      const img = document.getElementById('cameraFeed');
+      const placeholder = document.getElementById('cameraPlaceholder');
+      const camStatus = document.getElementById('camStatus');
+      img.src = 'data:image/jpeg;base64,' + f.chunks.join('');
+      img.style.display = 'block';
+      img.style.opacity = '1';
+      if (placeholder) placeholder.style.display = 'none';
+      if (camStatus) {
+        const now = new Date().toLocaleTimeString();
+        camStatus.textContent = '视频流 ' + now + ' (#' + s + ', ' + t + ' chunks)';
+        camStatus.style.color = 'var(--green)';
+      }
+      delete window._vcFrames[s];
+    }
+    return;
+  }
+
   // ── weather data ──
   if (pl.type === 'weather') {
     const card = document.getElementById('weatherCard');
@@ -943,20 +975,6 @@ function sendCmd(cmd, params = {}) {
   addResponse('sent', cmd + (Object.keys(params).length ? ' ' + JSON.stringify(params) : ''));
 }
 
-function updateCamera() {
-  const ip = document.getElementById('cameraIP').value.trim();
-  const img = document.getElementById('cameraFeed');
-  const placeholder = document.getElementById('cameraPlaceholder');
-  if (!ip) return;
-  img.src = 'http://' + ip + '/frame?t=' + Date.now();
-  img.style.opacity = '1';
-  placeholder.style.display = 'none';
-  // Refresh every 1 second
-  if (window._camTimer) clearInterval(window._camTimer);
-  window._camTimer = setInterval(function() {
-    img.src = 'http://' + ip + '/frame?t=' + Date.now();
-  }, 1000);
-}
 
 function escapeHtml(s) {
   const d = document.createElement('div');
