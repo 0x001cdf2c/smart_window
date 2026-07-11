@@ -28,8 +28,8 @@ static const char *TAG = "CAM";
 
 #define FRAME_WIDTH     1280
 #define FRAME_HEIGHT    720
-#define FRAME_FORMAT    V4L2_PIX_FMT_RGB565
-#define FRAME_SIZE      (FRAME_WIDTH * FRAME_HEIGHT * 2)
+#define FRAME_FORMAT    V4L2_PIX_FMT_RGB24
+#define FRAME_SIZE      (FRAME_WIDTH * FRAME_HEIGHT * 3)
 #define JPG_COPY_SIZE   (512 * 1024)
 #define JPG_WORK_SIZE   (2 * 1024 * 1024)
 
@@ -118,7 +118,7 @@ static void camera_capture_task(void *arg)
         goto cleanup;
     }
 
-    ESP_LOGI(TAG, "Capture task started, %dx%d RGB565 @ 30fps", FRAME_WIDTH, FRAME_HEIGHT);
+    ESP_LOGI(TAG, "Capture task started, %dx%d RGB888 @ 30fps", FRAME_WIDTH, FRAME_HEIGHT);
 
     int frame_count = 0;
     int jpg_ok_count = 0;
@@ -136,12 +136,26 @@ static void camera_capture_task(void *arg)
         if (buf.flags & V4L2_BUF_FLAG_DONE) {
             frame_count++;
 
+            /* Software white balance: boost R/B to fix green tint */
+            #define WB_RED_GAIN   1.6f
+            #define WB_BLUE_GAIN  1.6f
+            if (frame_count == 1) {
+                ESP_LOGI(TAG, "SW white balance: R=%.1fx, B=%.1fx", WB_RED_GAIN, WB_BLUE_GAIN);
+            }
+            uint8_t *px = buffer[buf.index];
+            for (int i = 0; i < FRAME_SIZE; i += 3) {
+                int r = (int)((float)px[i] * WB_RED_GAIN);
+                int b = (int)((float)px[i + 2] * WB_BLUE_GAIN);
+                px[i]     = (uint8_t)(r > 255 ? 255 : r);
+                px[i + 2] = (uint8_t)(b > 255 ? 255 : b);
+            }
+
             /* JPEG encode */
             if (s_jpeg_enc && s_jpg_buf && s_cached_jpg) {
                 jpeg_encode_cfg_t enc_cfg = {
                     .width = FRAME_WIDTH,
                     .height = FRAME_HEIGHT,
-                    .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
+                    .src_type = JPEG_ENCODE_IN_FORMAT_RGB888,
                     .sub_sample = JPEG_DOWN_SAMPLING_YUV422,
                     .image_quality = 40,
                 };
