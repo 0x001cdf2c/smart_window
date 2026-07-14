@@ -71,6 +71,49 @@ def log(tag: str, msg: str):
     print(f"[{t}] [{tag}] {msg}")
 
 # ============================================================
+# ASR: 阿里云 NUI 语音识别 (免费 500次/天)
+# NLP: kourichat gpt-4o-mini (意图理解+口语回复)
+# ============================================================
+# 阿里云 NUI
+ALIBABA_AK_ID  = os.environ.get("ALIBABA_AK_ID", "LTAI5t7aY6b9GnD1EeHkap9c")
+ALIBABA_AK_SEC = os.environ.get("ALIBABA_AK_SEC", "VvmHTFHZRxoSeiXKSSRp6ucx602f3l")
+NUI_APPKEY     = os.environ.get("NUI_APPKEY", "F1cFX8KM7SWl1UBE")
+# kourichat (OpenAI-compatible)
+LLM_API_KEY  = os.environ.get("LLM_API_KEY", "sk-kouri-cYguYvHlSeFK9OWEboLmubqmukJvgT8RAaURNMxDDGo4viNa")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.kourichat.com/v1")
+LLM_MODEL    = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+# Per-device audio accumulation
+audio_buffers: dict[str, bytearray] = {}
+
+VOICE_SYSTEM_PROMPT = """你是一个智能窗帘语音助手。会收到一段用户语音，结合传感器和天气数据，判断意图并回复。
+
+返回JSON (纯JSON, 不要markdown代码块):
+{"action": "<open|close|chat|timer>", "reply": "<口语回复, 30字以内>"}
+
+意图判断:
+- 想开窗/透透气/太热/闷 → action="open"
+- 想关窗/太吵/灰大/太亮 → action="close"
+- 闲聊/问天气/问建议 → action="chat"
+- 定时/帮我在X点开窗/关窗/X点提醒我开窗/X点关窗 → action="timer"
+  需要额外返回 time="HH:MM"(24小时制) 和 cmd="open"/"close"
+  例如: {"action":"timer","time":"12:00","cmd":"open","reply":"好的, 12点帮你开窗~"}
+
+时间解析规则:
+- "12点" → "12:00", "下午3点" → "15:00", "早上8点" → "08:00"
+- "8点半" → "08:30", "下午2点半" → "14:30"
+- "五分钟后" → 当前时间+5分钟(HH:MM格式)
+
+reply: 口语气息, 像朋友聊天, 加点语气词(呀、啦、嘛、哦、呢、哈), 30字以内
+
+示例:
+{"action": "open", "reply": "是有点闷, 开窗透透气~"}
+{"action": "close", "reply": "关上啦, 安静多啦"}
+{"action": "chat", "reply": "热呀! 现在32度, 小心中暑哦"}
+{"action": "timer", "time": "12:00", "cmd": "open", "reply": "好的, 中午12点帮你开窗~"}
+"""
+
+# ============================================================
 # 天气
 # ============================================================
 def fetch_weather(city_name: str) -> dict | None:
@@ -131,7 +174,7 @@ def fetch_suggestion(sensor: dict, weather: dict) -> str | None:
             wind=weather.get("wind", "--"),
         )
         resp = requests.post(DEEPSEEK_API_URL, json={
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-pro",
             "messages": [
                 {"role": "user", "content": prompt},
             ],
@@ -147,6 +190,223 @@ def fetch_suggestion(sensor: dict, weather: dict) -> str | None:
     except Exception as e:
         log("DS", f"API调用失败: {e}")
         return None
+
+# ── ASR: PCM → 阿里云 NUI → text (免费 500次/天) ──
+import hmac
+import hashlib
+import base64
+import uuid
+
+_nls_token: str = ""
+_nls_token_expire: float = 0.0
+
+def _get_nls_token() -> str:
+    """Get or refresh Alibaba Cloud NLS token."""
+    global _nls_token, _nls_token_expire
+    now = time.time()
+    if _nls_token and now < _nls_token_expire:
+        return _nls_token
+
+    if not ALIBABA_AK_ID or not ALIBABA_AK_SEC:
+        raise RuntimeError("缺少 ALIBABA_AK_ID / ALIBABA_AK_SEC 环境变量")
+
+    # Step 1: request a token via HMAC-SHA1 signed request
+    params = {
+        "AccessKeyId": ALIBABA_AK_ID,
+        "Action": "CreateToken",
+        "Version": "2019-02-28",
+        "Format": "JSON",
+        "RegionId": "cn-shanghai",
+        "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "SignatureMethod": "HMAC-SHA1",
+        "SignatureVersion": "1.0",
+        "SignatureNonce": str(uuid.uuid4()),
+    }
+    sorted_keys = sorted(params.keys())
+    qs = "&".join(f"{k}={requests.utils.quote(params[k], safe='')}" for k in sorted_keys)
+    sign_str = f"GET&{requests.utils.quote('/', safe='')}&{requests.utils.quote(qs, safe='')}"
+    signature = base64.b64encode(
+        hmac.new(f"{ALIBABA_AK_SEC}&".encode(), sign_str.encode(), hashlib.sha1).digest()
+    ).decode()
+    params["Signature"] = signature
+
+    url = f"https://nls-meta.cn-shanghai.aliyuncs.com/pop/2019-02-28/tokens"
+    resp = requests.get(url, params=params, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    token_info = data.get("Token", {})
+    _nls_token = token_info.get("Id", "")
+    _nls_token_expire = now + token_info.get("ExpireTime", 3600) - 60
+    log("NLS", f"Token 已获取 (过期: {time.strftime('%H:%M:%S', time.localtime(_nls_token_expire))})")
+    return _nls_token
+
+def fetch_asr(pcm_data: bytes, sample_rate: int = 16000) -> str | None:
+    """Send raw PCM to Alibaba Cloud NUI one-sentence recognition (blocking)."""
+    try:
+        token = _get_nls_token()
+        appkey = NUI_APPKEY
+        if not appkey:
+            log("ASR", "未配置 NUI_APPKEY, 跳过")
+            return None
+
+        url = f"https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/asr"
+        params = {
+            "appkey": appkey,
+            "format": "pcm",
+            "sample_rate": str(sample_rate),
+            "enable_punctuation_prediction": "true",
+            "enable_inverse_text_normalization": "true",
+            "enable_voice_detection": "false",  # Already VAD'd on device
+        }
+        headers = {
+            "X-NLS-Token": token,
+            "Content-Type": "application/octet-stream",
+        }
+        resp = requests.post(url, params=params, headers=headers,
+                             data=pcm_data, timeout=15)
+        resp.raise_for_status()
+        result = resp.json()
+        text = result.get("result", "").strip()
+        if text:
+            log("ASR", f"识别结果: {text}")
+        else:
+            log("ASR", f"无结果 (status={result.get('status')})")
+        return text
+    except Exception as e:
+        log("ASR", f"识别失败: {e}")
+        return None
+
+# ── NLP: text + context → DeepSeek → intent + reply ──
+def fetch_nlp(text: str, context: str) -> dict | None:
+    """Send recognized text + sensor/weather context to gpt-4o-mini via kourichat (blocking).
+    Returns {"action": "open"|"close"|"chat", "reply": "..."} or None."""
+    try:
+        user_msg = f"用户说: {text}\n\n{context}"
+        resp = requests.post(f"{LLM_BASE_URL}/chat/completions", json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": VOICE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            "max_tokens": 120,
+            "temperature": 0.7,
+        }, headers={
+            "Authorization": f"Bearer {LLM_API_KEY}",
+            "Content-Type": "application/json",
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown code fences
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+        result = json.loads(raw)
+        log("NLP", f"意图={result.get('action')} 回复={result.get('reply')}")
+        return result
+    except Exception as e:
+        log("NLP", f"失败: {e}")
+        return None
+
+# ── Async handlers for ASR pipeline ──
+async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
+    """Accumulate audio chunks, call ASR on end-of-speech."""
+    buf = audio_buffers.setdefault(dev_id, bytearray())
+
+    import base64
+    b64 = inner.get("audio", "")
+    try:
+        chunk = base64.b64decode(b64)
+        if chunk:
+            buf.extend(chunk)
+    except Exception as e:
+        log("ASR", f"base64解码失败: {e}")
+
+    log("ASR", f"收到音频块: {len(buf)} bytes total, is_end={inner.get('is_end')}")
+
+    if inner.get("is_end"):
+        if len(buf) < 1600:  # < 50ms, too short
+            log("ASR", f"音频太短 ({len(buf)} bytes), 跳过")
+            audio_buffers.pop(dev_id, None)
+            return
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            text = await loop.run_in_executor(pool, fetch_asr, bytes(buf))
+
+        audio_buffers.pop(dev_id, None)
+
+        if not text:
+            await send_to_device(dev_id, {"type": "asr_result", "text": ""})
+            return
+
+        # Send ASR result to device
+        await send_to_device(dev_id, {"type": "asr_result", "text": text})
+
+async def handle_asr_text(dev_id: str, text: str, device_ws):
+    """Combine text with sensor/weather context, call DeepSeek, return intent+reply."""
+    if not text:
+        return
+
+    # Build context from latest data
+    ctx_parts = []
+    if latest_sensor_data:
+        s = latest_sensor_data
+        ctx_parts.append(
+            f"室内: 温度{s.get('temp','--')}°C, "
+            f"湿度{s.get('humidity','--')}%, "
+            f"光照{s.get('light','--')} lux")
+    if latest_weather_data:
+        w = latest_weather_data
+        ctx_parts.append(
+            f"天气: {w.get('weather','--')}, "
+            f"{w.get('low','--')}~{w.get('high','--')}°C, "
+            f"降水概率{w.get('rain_pct','--')}%")
+    context = "\n".join(ctx_parts) if ctx_parts else "暂无传感器数据"
+
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = await loop.run_in_executor(pool, fetch_nlp, text, context)
+
+    if not result:
+        return
+
+    action = result.get("action", "chat")
+    reply = result.get("reply", "")
+
+    if action in ("open", "close"):
+        # Send command to device (device executes + speaks)
+        await send_to_device(dev_id, {"type": "asr_command", "action": action, "reply": reply})
+    elif action == "timer":
+        # Voice timer: send time + cmd to device
+        timer_time = result.get("time", "")
+        timer_cmd = result.get("cmd", "open")
+        await send_to_device(dev_id, {
+            "type": "asr_command",
+            "action": "timer",
+            "time": timer_time,
+            "cmd": timer_cmd,
+            "reply": reply
+        })
+    else:
+        # Just speak the reply
+        await send_to_device(dev_id, {"type": "asr_reply", "text": reply})
+
+async def send_to_device(dev_id: str, payload: dict):
+    """Send a forward message to the device."""
+    dev = devices.get(dev_id)
+    if dev:
+        try:
+            await dev.send(json.dumps({
+                "type": "forward",
+                "payload": payload,
+            }, ensure_ascii=False))
+        except Exception as e:
+            log("SEND", f"发送失败: {e}")
 
 async def push_weather(city: str):
     """Fetch weather and push to device + all web clients."""
@@ -317,6 +577,14 @@ async def handle_connection(ws):
             elif inner.get("type") == "suggestion_query":
                 log("DS", "收到建议查询请求")
                 asyncio.create_task(push_suggestion())
+
+            # ── ASR audio streaming (device → server) ──
+            elif inner.get("type") == "asr_audio" and ws_to_role.get(ws) == "device":
+                asyncio.create_task(handle_asr_audio(dev_id, inner, ws))
+
+            # ── NLP text parsing (device → server → DeepSeek) ──
+            elif inner.get("type") == "asr_text" and ws_to_role.get(ws) == "device":
+                asyncio.create_task(handle_asr_text(dev_id, inner.get("text", ""), ws))
 
             if ws_to_role.get(ws) == "device":
                 # device → all clients

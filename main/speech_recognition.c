@@ -57,8 +57,20 @@ static int fetch_chunksize;
 
 static sr_on_wake_t   on_wake   = NULL;
 static sr_on_command_t on_cmd   = NULL;
+static sr_on_audio_t   on_audio = NULL;
 
 static bool mn_active = false;
+
+/* ── 音频流模式 (ASR) ── */
+#define STREAM_BUF_MAX  32000   /* 最多缓存 1 秒音频 (16kHz mono 16bit) */
+static int16_t *stream_buf = NULL;
+static int stream_len = 0;
+static bool streaming = false;
+static int stream_silence_ms = 0;
+static int stream_total_ms = 0;
+#define STREAM_CHUNK_MS   160    /* 每 160ms 发送一块，避免大消息触发 WS 分片 bug */
+#define STREAM_SILENCE_MAX 2000  /* 2 秒静音后结束 */
+#define STREAM_TOTAL_MAX   8000  /* 最长 8 秒 */
 
 /* ── ES8311 初始化 (使用 espressif/es8311 库, 匹配 Waveshare 参考代码) ── */
 static void es8311_codec_init(void)
@@ -340,6 +352,16 @@ int sr_init(void)
 
 void sr_on_wake_cb(sr_on_wake_t cb)   { on_wake = cb; }
 void sr_on_command_cb(sr_on_command_t cb) { on_cmd = cb; }
+void sr_on_audio_cb(sr_on_audio_t cb) { on_audio = cb; }
+
+void sr_stop_streaming(void)
+{
+    streaming = false;
+    stream_len = 0;
+    stream_silence_ms = 0;
+    stream_total_ms = 0;
+    ESP_LOGI(TAG, "音频流已停止");
+}
 
 void sr_start(void)
 {
@@ -444,24 +466,71 @@ void sr_poll(void)
     /* 喂入 AFE (单声道) */
     afe_handle->feed(afe_data, afe_buf);
 
-    /* ── 命令识别模式下, 同时喂原始音频给 MultiNet ── */
+    /* ── 命令识别模式: MultiNet ── */
     if (mn_active && mn_handle && mn_data) {
-        int mn_chunksize = mn_handle->get_samp_chunksize(mn_data);
         esp_mn_state_t state = mn_handle->detect(mn_data, afe_buf);
 
         if (state == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *mn_res = mn_handle->get_results(mn_data);
             if (mn_res && mn_res->num > 0) {
-                ESP_LOGI(TAG, "=========================================");
                 ESP_LOGI(TAG, "  ✓ 识别命令: %s", mn_res->string);
-                ESP_LOGI(TAG, "  置信度: %d%%", (int)(mn_res->prob[0] * 100));
-                ESP_LOGI(TAG, "=========================================");
                 if (on_cmd) on_cmd(mn_res->string);
             }
             mn_active = false;
         } else if (state == ESP_MN_STATE_TIMEOUT) {
             ESP_LOGI(TAG, "命令识别超时, 回到唤醒监听");
             mn_active = false;
+        }
+    }
+
+    /* ── 音频流模式: 缓存 → 回调发送 (替代 MultiNet, 走云端 ASR) ── */
+    if (streaming && on_audio) {
+        int chunk_ms = mono_samples * 1000 / SAMPLE_RATE;
+
+        /* 简易 VAD: 计算当前帧 RMS 能量 */
+        int64_t sum_sq = 0;
+        for (int i = 0; i < mono_samples; i++) {
+            int64_t s = afe_buf[i];
+            sum_sq += s * s;
+        }
+        float rms = sqrtf((float)(sum_sq / mono_samples));
+        bool is_speech = (rms > 150.0f);  /* 阈值: RMS > 150 视为说话 */
+
+        if (is_speech) {
+            stream_silence_ms = 0;
+        } else {
+            stream_silence_ms += chunk_ms;
+        }
+        stream_total_ms += chunk_ms;
+
+        /* 把当前帧追加到流缓冲区 */
+        int space = STREAM_BUF_MAX - stream_len;
+        int copy = (mono_samples < space) ? mono_samples : space;
+        if (!stream_buf) {
+            stream_buf = heap_caps_calloc(STREAM_BUF_MAX, sizeof(int16_t),
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        }
+        if (stream_buf && copy > 0) {
+            memcpy(stream_buf + stream_len, afe_buf, copy * sizeof(int16_t));
+            stream_len += copy;
+        }
+
+        /* 每 500ms 或结束时发送一块 */
+        bool time_to_send = (stream_len * 1000 / SAMPLE_RATE >= STREAM_CHUNK_MS);
+        bool silence_end = (stream_silence_ms >= STREAM_SILENCE_MAX && stream_len > 0);
+        bool total_end = (stream_total_ms >= STREAM_TOTAL_MAX);
+
+        if (time_to_send || silence_end || total_end) {
+            bool is_end = silence_end || total_end;
+            on_audio(stream_buf, stream_len, is_end);
+            stream_len = 0;
+            if (is_end) {
+                streaming = false;
+                int total = stream_total_ms, sil = stream_silence_ms;
+                stream_silence_ms = 0;
+                stream_total_ms = 0;
+                ESP_LOGI(TAG, "音频流结束 (total=%dms silence=%dms)", total, sil);
+            }
         }
     }
 
@@ -499,8 +568,14 @@ void sr_poll(void)
 
         if (on_wake) on_wake(res->wake_word_index, name);
 
-        /* 启动 MultiNet 命令识别 */
-        if (mn_handle && mn_data) {
+        /* 优先走音频流 → 云端 ASR, 回退到本地 MultiNet */
+        if (on_audio) {
+            streaming = true;
+            stream_len = 0;
+            stream_silence_ms = 0;
+            stream_total_ms = 0;
+            ESP_LOGI(TAG, "进入音频流模式 (云端 ASR)...");
+        } else if (mn_handle && mn_data) {
             mn_active = true;
             mn_handle->clean(mn_data);
             ESP_LOGI(TAG, "等待语音命令...");

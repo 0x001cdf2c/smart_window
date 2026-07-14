@@ -56,3 +56,7 @@ claude --resume 78bf2cab-6a38-45f9-b6fa-510d0a78a8f5 --dangerously-skip-permissi
  nohup python /opt/smart-blinds/weather_service.py --city 南京 --interval 1800 > /opt/smart-blinds/weather.log 2>&1 &
 
  
+三个功能：
+1.手动  这个无需多言
+2.环境感知，根据传感器调整
+3.用户自适应 AI算法控制

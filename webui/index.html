@@ -450,21 +450,69 @@
     </button>
   </div>
 
-  <!-- Voice Commands -->
-  <div class="section-label">语音</div>
-  <div class="commands">
-    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '打开窗帘'})">
-      <span class="icon">🎤</span> 打开
+  <!-- Control Mode Selection -->
+  <div class="section-label">控制模式</div>
+  <div class="commands" style="grid-template-columns: repeat(4, 1fr);">
+    <button class="cmd-btn mode-btn" id="modeManual" onclick="setControlMode('manual')" style="background:#fff3e0;border-color:#ffcc80;color:#e65100;">
+      <span class="icon">🖐️</span> 手动
     </button>
-    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '关闭窗帘'})">
-      <span class="icon">🎤</span> 关闭
+    <button class="cmd-btn mode-btn" id="modeEnv" onclick="setControlMode('env')">
+      <span class="icon">🌿</span> 环境
     </button>
-    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '停止'})">
-      <span class="icon">🎤</span> 停止
+    <button class="cmd-btn mode-btn" id="modeAdaptive" onclick="setControlMode('adaptive')">
+      <span class="icon">🧠</span> 自适应
     </button>
-    <button class="cmd-btn" onclick="sendCmd('voice_cmd', {text: '设置为睡眠模式'})">
-      <span class="icon">🎤</span> 睡眠
+    <button class="cmd-btn mode-btn" id="modeTimer" onclick="setControlMode('timer')">
+      <span class="icon">⏰</span> 定时
     </button>
+  </div>
+
+  <!-- Timer Settings (shown when timer mode) -->
+  <div class="weather-card" id="timerCard" style="display:none;">
+    <div class="weather-header">
+      <span class="weather-icon">⏰</span>
+      <div>
+        <div class="weather-city">定时设置</div>
+        <div class="weather-desc" id="timerDesc">设置每日开关窗时间</div>
+      </div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;">
+      <div>
+        <label style="font-size:11px;color:var(--muted);">开窗时间</label>
+        <input type="time" id="timerOpen" value="08:00" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:14px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--muted);">关窗时间</label>
+        <input type="time" id="timerClose" value="22:00" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:14px;">
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <label style="font-size:12px;color:var(--text);">启用定时</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="timerEnabled" onchange="updateTimer()">
+        <span class="toggle-slider"></span>
+      </label>
+      <label style="font-size:12px;color:var(--text);margin-left:10px;">每日重复</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="timerRepeat" checked onchange="updateTimer()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <button class="angle-adjust-btn" onclick="updateTimer()" style="width:100%;">保存定时设置</button>
+  </div>
+
+  <!-- Adaptive Schedule (shown when adaptive mode) -->
+  <div class="weather-card" id="scheduleCard" style="display:none;">
+    <div class="weather-header">
+      <span class="weather-icon">📋</span>
+      <div>
+        <div class="weather-city">预测计划表</div>
+        <div class="weather-desc" id="scheduleDesc">基于用户习惯的智能预测</div>
+      </div>
+    </div>
+    <div id="scheduleList" style="display:flex;flex-direction:column;gap:8px;">
+      <div style="text-align:center;color:var(--muted);font-size:12px;padding:12px;">等待数据...</div>
+    </div>
   </div>
 
   <!-- Response -->
@@ -913,6 +961,25 @@ function handleMessage(msg) {
         drawGauge(currentAngle, false);
       }
     }
+    if (pl.ctrl_mode !== undefined && pl.ctrl_mode !== currentCtrlMode) {
+      setControlModeUI(pl.ctrl_mode);
+    }
+  }
+
+  // ── schedule data (adaptive predictions) ──
+  if (msg.type === 'schedule') {
+    try {
+      const raw = typeof pl === 'string' ? JSON.parse(pl) : pl;
+      updateScheduleCard(Array.isArray(raw) ? raw : [], 'adaptive');
+    } catch(e) { console.log('schedule parse err', e); }
+    return;
+  }
+
+  // ── timer schedule (one-shot voice timers) ──
+  if (pl.type === 'timer_schedule') {
+    const entries = pl.entries || [];
+    updateScheduleCard(entries, 'timer');
+    return;
   }
 
   if (pl.cmd && pl.status) {
@@ -975,6 +1042,109 @@ function sendCmd(cmd, params = {}) {
   addResponse('sent', cmd + (Object.keys(params).length ? ' ' + JSON.stringify(params) : ''));
 }
 
+
+/* ── Control Mode ── */
+let currentCtrlMode = 'manual';
+
+function setControlMode(mode) {
+  currentCtrlMode = mode;
+  sendCmd('set_mode', { mode: mode });
+
+  /* Update mode button styles */
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.style.background = 'var(--card)';
+    b.style.borderColor = 'var(--border)';
+    b.style.color = 'var(--text)';
+  });
+  const active = document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1));
+  if (active) {
+    if (mode === 'manual') { active.style.background = '#fff3e0'; active.style.borderColor = '#ffcc80'; active.style.color = '#e65100'; }
+    else if (mode === 'env') { active.style.background = '#d5f5e3'; active.style.borderColor = '#81c784'; active.style.color = '#27ae60'; }
+    else if (mode === 'adaptive') { active.style.background = '#ede7f6'; active.style.borderColor = '#b39ddb'; active.style.color = '#5f27cd'; }
+    else if (mode === 'timer') { active.style.background = '#e3f2fd'; active.style.borderColor = '#64b5f6'; active.style.color = '#1565c0'; }
+  }
+
+  /* Show/hide sub-cards */
+  document.getElementById('timerCard').style.display = (mode === 'timer') ? 'block' : 'none';
+  document.getElementById('scheduleCard').style.display =
+    (mode === 'adaptive' || mode === 'timer') ? 'block' : 'none';
+}
+
+function updateTimer() {
+  const openTime = document.getElementById('timerOpen').value;
+  const closeTime = document.getElementById('timerClose').value;
+  const enabled = document.getElementById('timerEnabled').checked;
+  const repeat = document.getElementById('timerRepeat').checked ? 'daily' : 'once';
+  sendCmd('set_timer', { open_time: openTime, close_time: closeTime, enabled: enabled, repeat: repeat });
+  document.getElementById('timerDesc').textContent =
+    enabled ? (openTime + ' 开 / ' + closeTime + ' 关 (' + (repeat === 'daily' ? '每日' : '单次') + ')')
+            : '定时已禁用';
+}
+
+/* Update mode button styles without sending command */
+function setControlModeUI(mode) {
+  currentCtrlMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.style.background = 'var(--card)';
+    b.style.borderColor = 'var(--border)';
+    b.style.color = 'var(--text)';
+  });
+  const active = document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1));
+  if (active) {
+    if (mode === 'manual') { active.style.background = '#fff3e0'; active.style.borderColor = '#ffcc80'; active.style.color = '#e65100'; }
+    else if (mode === 'env') { active.style.background = '#d5f5e3'; active.style.borderColor = '#81c784'; active.style.color = '#27ae60'; }
+    else if (mode === 'adaptive') { active.style.background = '#ede7f6'; active.style.borderColor = '#b39ddb'; active.style.color = '#5f27cd'; }
+    else if (mode === 'timer') { active.style.background = '#e3f2fd'; active.style.borderColor = '#64b5f6'; active.style.color = '#1565c0'; }
+  }
+  document.getElementById('timerCard').style.display = (mode === 'timer') ? 'block' : 'none';
+  document.getElementById('scheduleCard').style.display =
+    (mode === 'adaptive' || mode === 'timer') ? 'block' : 'none';
+}
+
+function updateScheduleCard(plan, source) {
+  source = source || 'adaptive';
+  const list = document.getElementById('scheduleList');
+  const desc = document.getElementById('scheduleDesc');
+
+  if (source === 'timer') {
+    desc.textContent = '语音定时任务';
+  }
+
+  if (!plan || plan.length === 0) {
+    const emptyMsg = source === 'timer' ? '暂无定时任务' : '暂无预测数据';
+    list.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px;">' + emptyMsg + '</div>';
+    if (source === 'adaptive') desc.textContent = '基于用户习惯的智能预测';
+    return;
+  }
+
+  if (source === 'adaptive') desc.textContent = '共 ' + plan.length + ' 条预测';
+
+  let html = '';
+  plan.forEach((e, i) => {
+    const timeStr = e.time_str || e.time || '';
+    const actionStr = e.action || '';
+    const icon = actionStr === 'open' ? '🟢' : '🔴';
+    const actLabel = actionStr === 'open' ? '开窗' : '关窗';
+    const conf = e.confidence !== undefined ? e.confidence : null;
+
+    html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg);border-radius:10px;">' +
+      '<span>' + icon + '</span>' +
+      '<span style="font-weight:600;font-size:14px;">' + escapeHtml(timeStr) + '</span>' +
+      '<span style="color:var(--muted);font-size:12px;">' + escapeHtml(actLabel) + '</span>';
+    if (conf !== null) {
+      const confColor = conf >= 70 ? 'var(--green)' : (conf >= 40 ? '#f9ca24' : 'var(--muted)');
+      html += '<span style="margin-left:auto;font-size:12px;color:' + confColor + ';font-weight:600;">' + conf + '%</span>';
+    } else {
+      html += '<button onclick="deleteTimer(' + i + ')" style="margin-left:auto;background:var(--red);color:#fff;border:none;border-radius:10px;width:22px;height:22px;font-size:12px;line-height:1;cursor:pointer;padding:0;">✕</button>';
+    }
+    html += '</div>';
+  });
+  list.innerHTML = html;
+}
+
+function deleteTimer(idx) {
+  sendCmd('delete_timer', { index: idx });
+}
 
 function escapeHtml(s) {
   const d = document.createElement('div');

@@ -441,6 +441,7 @@ int msg_bus_init(const char *server_url, const char *device_id)
 int msg_bus_send(const char *type, const char *payload)
 {
     if (!g_ws) return -1;
+    if (!msg_bus_is_connected()) return -1;
 
     /* 构建 JSON: {"type":"send","payload":{"type":<user_type>, ...<user_payload>}} */
     cJSON *root = cJSON_CreateObject();
@@ -481,6 +482,7 @@ bool msg_bus_is_connected(void)
 int msg_bus_send_raw_msg(const char *msg, int len)
 {
     if (!g_ws) return -1;
+    if (!msg_bus_is_connected()) return -1;
     int ret = esp_websocket_client_send_text(g_ws, msg, len, pdMS_TO_TICKS(5000));
     return (ret > 0) ? 0 : -1;
 }

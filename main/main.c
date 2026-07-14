@@ -21,7 +21,10 @@
 #include "camera_capture.h"
 #include "http_server_cam.h"
 #include "i2c_bus.h"
+#include "control_algorithm.h"
+#include <time.h>
 #include <mbedtls/base64.h>
+#include "lwip/apps/sntp.h"
 
 static const char *TAG = "main";
 
@@ -31,6 +34,11 @@ static QueueHandle_t g_cmd_queue = NULL;
 
 /* ── 自动模式控制 ── */
 static bool g_auto_running = false;
+
+/* ── 传感器数据缓存 (供控制算法查询) ── */
+static float s_last_temp  = 0.0f;
+static float s_last_humi  = 0.0f;
+static float s_last_light = 0.0f;
 
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
@@ -43,15 +51,23 @@ static void on_ui_action(const char *action)
     ESP_LOGI(TAG, "[UI动作] %s", action);
 
     if (strcmp(action, "open") == 0) {
-        g_auto_running = false;
-        servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(0.0f);
-        ui_update_mode(false);
+        control_adaptive_record("open");
+        if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
+            g_auto_running = false;
+            servo_set_mode(SERVO_MODE_MANUAL);
+            ui_update_mode(false);
+            control_set_mode(CONTROL_MODE_MANUAL);
+        }
     } else if (strcmp(action, "close") == 0) {
-        g_auto_running = false;
-        servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(90.0f);
-        ui_update_mode(false);
+        control_adaptive_record("close");
+        if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
+            g_auto_running = false;
+            servo_set_mode(SERVO_MODE_MANUAL);
+            ui_update_mode(false);
+            control_set_mode(CONTROL_MODE_MANUAL);
+        }
     } else if (strcmp(action, "cw") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
@@ -59,6 +75,10 @@ static void on_ui_action(const char *action)
         if (a > 180.0f) a = 180.0f;
         servo_set_angle(a);
         ui_update_mode(false);
+    } else if (strcmp(action, "cw_hold") == 0) {
+        float a = servo_get_angle() + 2.0f;
+        if (a > 180.0f) a = 180.0f;
+        servo_set_angle(a);
     } else if (strcmp(action, "ccw") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
@@ -66,6 +86,10 @@ static void on_ui_action(const char *action)
         if (a < 0.0f) a = 0.0f;
         servo_set_angle(a);
         ui_update_mode(false);
+    } else if (strcmp(action, "ccw_hold") == 0) {
+        float a = servo_get_angle() - 2.0f;
+        if (a < 0.0f) a = 0.0f;
+        servo_set_angle(a);
     } else if (strcmp(action, "manual") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
@@ -74,6 +98,28 @@ static void on_ui_action(const char *action)
         g_auto_running = true;
         servo_set_mode(SERVO_MODE_AUTO);
         ui_update_mode(true);
+    } else if (strcmp(action, "mode_manual") == 0) {
+        control_set_mode(CONTROL_MODE_MANUAL);
+        display_lvgl_lock();
+        ui_update_mode_highlight("manual");
+        display_lvgl_unlock();
+    } else if (strcmp(action, "mode_env") == 0) {
+        control_set_mode(CONTROL_MODE_ENV);
+        display_lvgl_lock();
+        ui_update_mode_highlight("env");
+        display_lvgl_unlock();
+    } else if (strcmp(action, "mode_adaptive") == 0) {
+        control_set_mode(CONTROL_MODE_ADAPTIVE);
+        display_lvgl_lock();
+        ui_update_mode_highlight("adaptive");
+        display_lvgl_unlock();
+    } else if (strcmp(action, "timer_del_last") == 0) {
+        oneshot_t shots[ONE_SHOT_MAX];
+        int n = control_timer_get_one_shots(shots, ONE_SHOT_MAX);
+        if (n > 0) {
+            control_timer_remove_one_shot(n - 1);
+            ESP_LOGI(TAG, "Screen: deleted last one-shot timer (idx %d)", n - 1);
+        }
     }
 }
 
@@ -100,6 +146,28 @@ static void network_init_task(void *arg)
     display_lvgl_lock();
     ui_update_connection(true);
     display_lvgl_unlock();
+
+    /* NTP time sync (Beijing time, UTC+8) */
+    ESP_LOGI(TAG, "Syncing NTP time...");
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "ntp.aliyun.com");
+    sntp_setservername(1, "pool.ntp.org");
+    sntp_init();
+    setenv("TZ", "CST-8", 1);
+    tzset();
+    for (int i = 0; i < 30; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        time_t now;
+        time(&now);
+        if (now > 1700000000) {  /* after ~2023, synced */
+            struct tm timeinfo;
+            localtime_r(&now, &timeinfo);
+            ESP_LOGI(TAG, "NTP synced: %04d-%02d-%02d %02d:%02d:%02d",
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1,
+                     timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+            break;
+        }
+    }
 
     voice_reply_say("联网成功");
 
@@ -174,6 +242,91 @@ static void on_speech_command(const char *command_str)
     voice_reply_say(buf);
 }
 
+/* ── 音频流回调: 唤醒后将 PCM 音频发往服务端做 ASR ── */
+static void on_audio_stream(const int16_t *samples, int count, bool is_end)
+{
+    if (!samples || count == 0) return;
+    if (!msg_bus_is_connected()) return;
+
+    /* base64 编码 PCM 数据 */
+    size_t raw_len = count * sizeof(int16_t);
+    size_t b64_len = ((raw_len + 2) / 3) * 4 + 1;
+    char *b64_buf = malloc(b64_len);
+    if (!b64_buf) return;
+
+    size_t out_len = 0;
+    mbedtls_base64_encode((unsigned char *)b64_buf, b64_len, &out_len,
+                          (const unsigned char *)samples, raw_len);
+    b64_buf[out_len] = '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "sample_rate", "16000");
+    cJSON_AddNumberToObject(root, "channels", 1);
+    cJSON_AddNumberToObject(root, "bits", 16);
+    cJSON_AddBoolToObject(root, "is_end", is_end);
+    cJSON_AddStringToObject(root, "audio", b64_buf);
+    char *json_str = cJSON_PrintUnformatted(root);
+
+    msg_bus_send("asr_audio", json_str);
+
+    cJSON_Delete(root);
+    free(json_str);
+    free(b64_buf);
+
+    ESP_LOGI(TAG, "[音频流] %d samples, is_end=%d, b64=%d bytes",
+             count, is_end, (int)out_len);
+}
+
+/* ── 处理 ASR 返回的文字: 本地匹配开/关窗, 其余发服务端 DeepSeek 回复 ── */
+static void handle_asr_text(const char *text)
+{
+    if (!text || strlen(text) == 0) return;
+
+    ESP_LOGI(TAG, "[ASR结果] %s", text);
+
+    /* 检测是否包含时间相关词 → 可能是定时命令, 发服务端 NLP */
+    bool has_time = false;
+    if (strstr(text, "点") || strstr(text, "分") || strstr(text, "半") ||
+        strstr(text, "定时") || strstr(text, "后") ||
+        strstr(text, "上午") || strstr(text, "下午") || strstr(text, "中午") ||
+        strstr(text, "早上") || strstr(text, "晚上") || strstr(text, "凌晨") ||
+        strstr(text, "分钟") || strstr(text, "小时") || strstr(text, "帮")) {
+        has_time = true;
+    }
+
+    if (!has_time) {
+        /* 本地关键词匹配: 打开/关闭窗帘 → 直接执行 + 播报 */
+        if (strstr(text, "打开") && (strstr(text, "窗帘") || strstr(text, "窗户") || strstr(text, "窗"))) {
+            servo_set_angle(0.0f);
+            control_adaptive_record("open");
+            voice_reply_say("收到，打开窗帘");
+            return;
+        }
+        if (strstr(text, "关闭") && (strstr(text, "窗帘") || strstr(text, "窗户") || strstr(text, "窗"))) {
+            servo_set_angle(90.0f);
+            control_adaptive_record("close");
+            voice_reply_say("收到，关闭窗帘");
+            return;
+        }
+        if (strstr(text, "停止")) {
+            g_auto_running = false;
+            servo_set_mode(SERVO_MODE_MANUAL);
+            voice_reply_say("收到，已停止");
+            return;
+        }
+    }
+
+    /* 非开关指令 / 含时间词 → 发往服务端 NLP */
+    {
+        cJSON *pl = cJSON_CreateObject();
+        cJSON_AddStringToObject(pl, "text", text);
+        char *js = cJSON_PrintUnformatted(pl);
+        msg_bus_send("asr_text", js);
+        free(js);
+        cJSON_Delete(pl);
+    }
+}
+
 /* ── 解析并执行从 Web/手机发来的命令 ── */
 static void handle_web_command(const char *json_str)
 {
@@ -223,12 +376,14 @@ static void handle_web_command(const char *json_str)
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(0.0f);
         voice_reply_say("打开窗帘");
+        control_adaptive_record("open");
 
     } else if (strcmp(cmd, "close_blinds") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(90.0f);
         voice_reply_say("关闭窗帘");
+        control_adaptive_record("close");
 
     } else if (strcmp(cmd, "voice_cmd") == 0) {
         cJSON *text_item = cJSON_GetObjectItem(root, "text");
@@ -284,12 +439,106 @@ static void handle_web_command(const char *json_str)
 
     } else if (strcmp(cmd, "status_report") == 0) {
         float ang = servo_get_angle();
-        char buf[96];
+        char buf[128];
+        const char *mn = control_mode_name(control_get_mode());
         snprintf(buf, sizeof(buf),
-            "{\"type\":\"status\",\"angle\":%.1f,\"mode\":\"%s\"}",
+            "{\"type\":\"status\",\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
             ang,
-            servo_get_mode() == SERVO_MODE_AUTO ? "auto" : "manual");
+            servo_get_mode() == SERVO_MODE_AUTO ? "auto" : "manual", mn);
         msg_bus_send("status", buf);
+
+    } else if (strcmp(cmd, "set_mode") == 0) {
+        cJSON *mode_item = cJSON_GetObjectItem(root, "mode");
+        if (mode_item && mode_item->valuestring) {
+            g_auto_running = false;
+            servo_set_mode(SERVO_MODE_MANUAL);
+            if (strcmp(mode_item->valuestring, "env") == 0) {
+                control_set_mode(CONTROL_MODE_ENV);
+            } else if (strcmp(mode_item->valuestring, "adaptive") == 0) {
+                control_set_mode(CONTROL_MODE_ADAPTIVE);
+            } else if (strcmp(mode_item->valuestring, "timer") == 0) {
+                control_set_mode(CONTROL_MODE_TIMER);
+            } else {
+                control_set_mode(CONTROL_MODE_MANUAL);
+            }
+            ESP_LOGI(TAG, "Control mode -> %s", mode_item->valuestring);
+        }
+
+    } else if (strcmp(cmd, "set_timer") == 0) {
+        cJSON *ot = cJSON_GetObjectItem(root, "open_time");
+        cJSON *ct = cJSON_GetObjectItem(root, "close_time");
+        cJSON *en = cJSON_GetObjectItem(root, "enabled");
+        cJSON *rp = cJSON_GetObjectItem(root, "repeat");
+        control_timer_set(
+            ot ? ot->valuestring : NULL,
+            ct ? ct->valuestring : NULL,
+            en ? cJSON_IsTrue(en) : true,
+            rp ? (strcmp(rp->valuestring, "daily") == 0) : true);
+        control_set_mode(CONTROL_MODE_TIMER);
+
+    } else if (strcmp(cmd, "delete_timer") == 0) {
+        cJSON *idx = cJSON_GetObjectItem(root, "index");
+        if (idx && idx->valueint >= 0) {
+            control_timer_remove_one_shot(idx->valueint);
+            ESP_LOGI(TAG, "Web: deleted timer idx %d", idx->valueint);
+        }
+
+    } else if (strcmp(cmd, "env_suggestion") == 0) {
+        /* Return current env evaluation */
+        char buf[192];
+        env_action_t act = control_env_evaluate(
+            s_last_temp, s_last_humi, s_last_light);
+        float target = control_env_target_angle(
+            s_last_temp, s_last_humi, s_last_light);
+        snprintf(buf, sizeof(buf),
+            "{\"action\":\"%s\",\"angle\":%.1f,\"temp\":%.1f,\"humi\":%.1f,\"light\":%.0f}",
+            act == ENV_ACTION_OPEN ? "open" :
+            act == ENV_ACTION_CLOSE ? "close" : "none",
+            target, s_last_temp, s_last_humi, s_last_light);
+        msg_bus_send("env_suggestion", buf);
+
+    } else if (strcmp(cmd, "ai_suggestion") == 0) {
+        cJSON *text_item = cJSON_GetObjectItem(root, "text");
+        if (text_item && text_item->valuestring) {
+            ESP_LOGI(TAG, "AI suggestion received: %s", text_item->valuestring);
+        }
+
+    } else if (strcmp(cmd, "asr_result") == 0) {
+        cJSON *text_item = cJSON_GetObjectItem(root, "text");
+        if (text_item && text_item->valuestring) {
+            handle_asr_text(text_item->valuestring);
+        }
+    } else if (strcmp(cmd, "asr_command") == 0) {
+        /* DeepSeek 判断需要开关窗 → 执行 + 语音回复 */
+        cJSON *act = cJSON_GetObjectItem(root, "action");
+        cJSON *rep = cJSON_GetObjectItem(root, "reply");
+        if (act && act->valuestring) {
+            if (strcmp(act->valuestring, "open") == 0) {
+                servo_set_angle(0.0f);
+                control_adaptive_record("open");
+            } else if (strcmp(act->valuestring, "close") == 0) {
+                servo_set_angle(90.0f);
+                control_adaptive_record("close");
+            } else if (strcmp(act->valuestring, "timer") == 0) {
+                cJSON *tm = cJSON_GetObjectItem(root, "time");
+                cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
+                if (tm && tm->valuestring && cmd && cmd->valuestring) {
+                    control_timer_add_one_shot(tm->valuestring, cmd->valuestring,
+                                               rep ? rep->valuestring : NULL);
+                    ESP_LOGI(TAG, "Voice timer: %s %s", tm->valuestring, cmd->valuestring);
+                }
+            }
+        }
+        if (rep && rep->valuestring) {
+            voice_reply_say(rep->valuestring);
+        }
+
+    } else if (strcmp(cmd, "asr_reply") == 0) {
+        /* DeepSeek 的闲聊回复 → 直接语音播出 */
+        cJSON *text_item = cJSON_GetObjectItem(root, "text");
+        if (text_item && text_item->valuestring) {
+            voice_reply_say(text_item->valuestring);
+        }
     }
 
     cJSON_Delete(root);
@@ -348,19 +597,225 @@ static void sensor_task(void *arg)
         bh1750_read(&lux_f);
         int light = (int)lux_f;
 
+        /* 缓存传感器值供命令响应使用 */
+        s_last_temp  = temp_f;
+        s_last_humi  = humi_f;
+        s_last_light = lux_f;
+
+        /* ── 环境感知模式: 传感器驱动窗户 ── */
+        if (control_get_mode() == CONTROL_MODE_ENV) {
+            env_action_t act = control_env_evaluate(temp_f, humi_f, lux_f);
+            if (act == ENV_ACTION_OPEN) {
+                float tgt = control_env_target_angle(temp_f, humi_f, lux_f);
+                servo_set_angle(tgt);
+            } else if (act == ENV_ACTION_CLOSE) {
+                servo_set_angle(90.0f);
+            }
+            /* ENV_ACTION_NONE: 保持当前角度不变 */
+        }
+
+        /* ── 用户自适应模式: 执行预测计划 ── */
+        if (control_get_mode() == CONTROL_MODE_ADAPTIVE) {
+            const schedule_plan_t *plan = control_adaptive_get_plan();
+            if (plan && plan->count > 0) {
+                time_t now = time(NULL);
+                struct tm tm;
+                localtime_r(&now, &tm);
+                char now_str[6];
+                snprintf(now_str, sizeof(now_str), "%02d:%02d", tm.tm_hour, tm.tm_min);
+                for (int i = 0; i < plan->count; i++) {
+                    if (strcmp(now_str, plan->entries[i].time_str) == 0) {
+                        if (strcmp(plan->entries[i].action, "open") == 0)
+                            servo_set_angle(0.0f);
+                        else
+                            servo_set_angle(90.0f);
+                    }
+                }
+            }
+        }
+
         /* Update LVGL UI (thread-safe with lv_lock) */
         display_lvgl_lock();
         ui_update_sensor(temp_f, humi_f, light);
         ui_update_mode(servo_get_mode() == SERVO_MODE_AUTO);
+
+        /* Build mode info for screen */
+        {
+            control_mode_t cm = control_get_mode();
+            const char *mn;
+            switch (cm) {
+            case CONTROL_MODE_MANUAL:   mn = "手动"; break;
+            case CONTROL_MODE_ENV:      mn = "环境"; break;
+            case CONTROL_MODE_ADAPTIVE: mn = "自适应"; break;
+            case CONTROL_MODE_TIMER:    mn = "定时"; break;
+            default:                    mn = "未知"; break;
+            }
+            char detail[64] = "";
+            char sched_text[256] = "";
+
+            switch (cm) {
+            case CONTROL_MODE_MANUAL:
+                snprintf(detail, sizeof(detail), "手动控制中");
+                break;
+            case CONTROL_MODE_ENV:
+                snprintf(detail, sizeof(detail), "自动: 温%.1f 湿%.0f 光%d",
+                         temp_f, humi_f, light);
+                break;
+            case CONTROL_MODE_ADAPTIVE: {
+                const schedule_plan_t *plan = control_adaptive_get_plan();
+                int rec_cnt = 0;
+                const recent_op_t *recs = control_adaptive_get_recent_ops(&rec_cnt);
+
+                /* Left column: predicted schedule */
+                char pred_left[128] = "预测:\n";
+                if (plan && plan->count > 0) {
+                    snprintf(detail, sizeof(detail), "学习: %d 条预测", plan->count);
+                    int off = strlen(pred_left);
+                    for (int i = 0; i < plan->count; i++) {
+                        const char *act_name = (strcmp(plan->entries[i].action, "open") == 0) ? "开" : "关";
+                        off += snprintf(pred_left + off, sizeof(pred_left) - off,
+                                        "%s %s (%d%%)\n",
+                                        act_name,
+                                        plan->entries[i].time_str,
+                                        plan->entries[i].confidence);
+                    }
+                } else {
+                    snprintf(detail, sizeof(detail), "学习: 收集中...");
+                    snprintf(pred_left, sizeof(pred_left), "预测:\n等待数据...");
+                }
+
+                /* Right column: recent operations (newest first) */
+                char recent_right[128] = "最近操作:\n";
+                if (rec_cnt > 0) {
+                    int off = strlen(recent_right);
+                    int show = rec_cnt > 5 ? 5 : rec_cnt;
+                    for (int i = 0; i < show && off < (int)sizeof(recent_right) - 16; i++) {
+                        const char *act_name = (strcmp(recs[i].action, "open") == 0) ? "开" : "关";
+                        off += snprintf(recent_right + off, sizeof(recent_right) - off,
+                                        "%s %s\n",
+                                        recs[i].time_str, act_name);
+                    }
+                } else {
+                    snprintf(recent_right + strlen(recent_right),
+                             sizeof(recent_right) - strlen(recent_right),
+                             "暂无记录");
+                }
+
+                ui_update_adaptive_info(detail, pred_left, recent_right);
+                break;
+            }
+            case CONTROL_MODE_TIMER: {
+                char open_t[6], close_t[6];
+                bool en, rep;
+                control_timer_get_config(open_t, close_t, &en, &rep);
+                if (en)
+                    snprintf(detail, sizeof(detail), "定时开: %s-%s %s",
+                             open_t, close_t, rep ? "每日" : "单次");
+                else
+                    snprintf(detail, sizeof(detail), "定时已关闭");
+                break;
+            }
+            default:
+                break;
+            }
+            if (cm != CONTROL_MODE_ADAPTIVE) {
+                ui_update_mode_info(mn, detail, sched_text);
+            }
+        }
+
+        /* ── 定时计划显示 (语音/Web设置的one-shot定时) ── */
+        {
+            char timer_text[256] = "";
+            oneshot_t shots[ONE_SHOT_MAX];
+            int n = control_timer_get_one_shots(shots, ONE_SHOT_MAX);
+            if (n > 0) {
+                int off = 0;
+                for (int i = 0; i < n && off < (int)sizeof(timer_text) - 16; i++) {
+                    const char *act_name = (strcmp(shots[i].action, "open") == 0) ? "开窗" : "关窗";
+                    off += snprintf(timer_text + off, sizeof(timer_text) - off,
+                                   "%s %s  ", shots[i].time, act_name);
+                }
+                ui_update_timer_schedule(timer_text);
+            } else {
+                ui_update_timer_schedule(NULL);
+            }
+        }
         display_lvgl_unlock();
 
-        char buf[192];
+        char buf[256];
+        const char *ctrl_mn = control_mode_name(control_get_mode());
         snprintf(buf, sizeof(buf),
-            "{\"temp\":%.1f,\"humidity\":%.1f,\"light\":%d,\"angle\":%.1f,\"mode\":\"%s\"}",
-            temp_f, humi_f, light, angle, mode_str);
+            "{\"temp\":%.1f,\"humidity\":%.1f,\"light\":%d,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
+            temp_f, humi_f, light, angle, mode_str, ctrl_mn);
         msg_bus_send("sensor_data", buf);
 
+        /* 推送自适应模式计划表 */
+        if (control_get_mode() == CONTROL_MODE_ADAPTIVE) {
+            const schedule_plan_t *plan = control_adaptive_get_plan();
+            if (plan && plan->count > 0) {
+                char sch[320];
+                int off = snprintf(sch, sizeof(sch), "[");
+                for (int i = 0; i < plan->count; i++) {
+                    off += snprintf(sch + off, sizeof(sch) - off,
+                        "%s{\"time\":\"%s\",\"action\":\"%s\",\"confidence\":%d}",
+                        i > 0 ? "," : "",
+                        plan->entries[i].time_str,
+                        plan->entries[i].action,
+                        plan->entries[i].confidence);
+                }
+                off += snprintf(sch + off, sizeof(sch) - off, "]");
+                msg_bus_send("schedule", sch);
+            }
+        }
+
+        /* 推送一次性定时计划到 Web UI */
+        {
+            oneshot_t shots[ONE_SHOT_MAX];
+            int n = control_timer_get_one_shots(shots, ONE_SHOT_MAX);
+            cJSON *tsch = cJSON_CreateObject();
+            cJSON_AddStringToObject(tsch, "type", "timer_schedule");
+            cJSON_AddStringToObject(tsch, "source", "timer");
+            cJSON *arr = cJSON_AddArrayToObject(tsch, "entries");
+            for (int i = 0; i < n; i++) {
+                cJSON *e = cJSON_CreateObject();
+                cJSON_AddStringToObject(e, "time", shots[i].time);
+                cJSON_AddStringToObject(e, "action", shots[i].action);
+                cJSON_AddItemToArray(arr, e);
+            }
+            char *js = cJSON_PrintUnformatted(tsch);
+            msg_bus_send("timer_schedule", js);
+            free(js);
+            cJSON_Delete(tsch);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+/* ── Timer fire callback: routes through command queue for thread safety ── */
+static void on_timer_fire(const char *action, const char *reply)
+{
+    char *cmd = NULL;
+    if (strcmp(action, "open") == 0) {
+        cmd = strdup("{\"type\":\"open_blinds\"}");
+    } else if (strcmp(action, "close") == 0) {
+        cmd = strdup("{\"type\":\"close_blinds\"}");
+    }
+    if (cmd) {
+        xQueueSend(g_cmd_queue, &cmd, pdMS_TO_TICKS(100));
+        ESP_LOGI(TAG, "Timer fire queued: %s", action);
+    }
+    if (reply && reply[0]) {
+        voice_reply_say(reply);
+    }
+}
+
+/* ── 定时器 tick: 每秒检查一次定时计划 ── */
+static void timer_tick_task(void *arg)
+{
+    while (1) {
+        control_timer_tick();
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -465,6 +920,10 @@ void app_main(void)
 {
     nvs_flash_init();
 
+    control_algorithm_init();
+    /* Register callback so timer fires go through command queue (thread-safe) */
+    control_set_timer_fire_callback(on_timer_fire);
+
     esp_log_level_set("wifi", ESP_LOG_INFO);
 
     /* 命令队列: 解耦 WebSocket 回调与处理, 避免快速连续消息被吞 */
@@ -523,6 +982,7 @@ void app_main(void)
     } else {
         sr_on_wake_cb(on_wake_word);
         sr_on_command_cb(on_speech_command);
+        sr_on_audio_cb(on_audio_stream);
         sr_start();
         xTaskCreate(speech_task, "speech", 4096, NULL, 4, NULL);
         sr_ok = true;
@@ -548,6 +1008,9 @@ void app_main(void)
 
     /* 4. 自动模式扫风任务 (始终运行, 由 g_auto_running 控制是否转动) */
     xTaskCreate(auto_sweep_task, "auto_sweep", 3072, NULL, 4, NULL);
+
+    /* 5. 定时器 tick (每秒检查一次) */
+    xTaskCreate(timer_tick_task, "timer_tick", 2048, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "系统就绪 (语音=%s, 网络=后台连接中, 舵机x4=GPIO20-23)",
              sr_ok ? "ON" : "OFF");
