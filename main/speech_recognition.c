@@ -139,18 +139,18 @@ static void es8311_codec_init(void)
         ESP_LOGI(TAG, "麦克风增益=30dB");
     }
 
-    /* PA 使能 */
-    gpio_config_t pa_cfg = {
-        .pin_bit_mask = BIT64(PA_CTRL_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&pa_cfg);
-    gpio_set_level(PA_CTRL_GPIO, 1);
+    /* PA 使能 — 暂禁用, GPIO53 给烟雾传感器用 */
+    // gpio_config_t pa_cfg = {
+    //     .pin_bit_mask = BIT64(PA_CTRL_GPIO),
+    //     .mode = GPIO_MODE_OUTPUT,
+    //     .pull_up_en = GPIO_PULLUP_DISABLE,
+    //     .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    //     .intr_type = GPIO_INTR_DISABLE,
+    // };
+    // gpio_config(&pa_cfg);
+    // gpio_set_level(PA_CTRL_GPIO, 1);
 
-    ESP_LOGI(TAG, "ES8311 就绪 (MCLK=I2S/GPIO%d, %ld Hz, 模拟麦克风)",
+    ESP_LOGI(TAG, "ES8311 就绪 (MCLK=I2S/GPIO%d, %ld Hz, 喇叭已禁用)",
              I2S_MCK, (long)MCLK_FREQ_HZ);
 }
 

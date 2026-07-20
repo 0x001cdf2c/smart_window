@@ -4,7 +4,9 @@
 void ui_init(void);
 
 /* Called periodically (e.g. every sensor loop) to update values */
-void ui_update_sensor(float temp, float humidity, int light);
+void ui_update_sensor(float t_in, float h_in, float t_out, float h_out, int light);
+void ui_update_smoke(int smoke);
+void ui_update_airflow(bool has_airflow);
 void ui_update_weather(const char *city, const char *weather, int high, int low, int rain_pct);
 void ui_update_mode(bool is_auto);
 void ui_update_connection(bool connected);

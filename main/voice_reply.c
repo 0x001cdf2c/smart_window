@@ -104,7 +104,7 @@ int voice_reply_init(int dout_gpio)
         return -1;
     }
 
-    gpio_set_level(PA_CTRL_GPIO, 1);
+    // gpio_set_level(PA_CTRL_GPIO, 1);  // 暂禁用, GPIO53 给烟雾传感器
 
     tts_queue = xQueueCreate(TTS_QUEUE_LEN, sizeof(char *));
     xTaskCreate(tts_task, "tts_task", 4096, NULL, 5, NULL);

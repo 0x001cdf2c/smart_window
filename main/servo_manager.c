@@ -1,6 +1,8 @@
 #include "servo_manager.h"
 
 #include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/mcpwm_timer.h"
 #include "driver/mcpwm_oper.h"
 #include "driver/mcpwm_cmpr.h"
@@ -13,12 +15,13 @@ static const char *TAG = "SERVO";
 #define PULSE_MIN_US     500
 #define PULSE_MAX_US     2500
 
-/* ESP32-P4 MCPWM Group 0: 3 operators max.
-   Use 2 operators, each with 2 comparators + 2 generators → 4 servos. */
-#define OP_COUNT 2
+/* ESP32-P4 MCPWM Group 0: 3 operators, 2 channels each → 6 servos. */
+#define OP_COUNT 3
 #define CH_PER_OP 2
+#define BLINDS_COUNT 4   /* 前4路=百叶窗, 后2路=雨棚 */
 
 static int          s_gpios[SERVO_COUNT];
+static bool         s_inverted[SERVO_COUNT];
 static float        s_angle = 0.0f;
 static servo_mode_t s_mode = SERVO_MODE_MANUAL;
 static bool         s_initialized = false;
@@ -116,8 +119,9 @@ esp_err_t servo_init(const int gpios[SERVO_COUNT])
                 return ret;
             }
 
-            /* Initial: 0 deg → 500us */
-            ret = mcpwm_comparator_set_compare_value(s_cmprs[idx], angle_to_pulse_us(0.0f));
+            /* Initial: 90 deg */
+            float init_angle = s_inverted[idx] ? (180.0f - 90.0f) : 90.0f;
+            ret = mcpwm_comparator_set_compare_value(s_cmprs[idx], angle_to_pulse_us(init_angle));
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "MCPWM cmp set %d failed", idx);
                 return ret;
@@ -137,12 +141,19 @@ esp_err_t servo_init(const int gpios[SERVO_COUNT])
         return ret;
     }
 
-    s_angle = 0.0f;
+    s_angle = 90.0f;
     s_initialized = true;
 
-    ESP_LOGI(TAG, "Servo x%d ready on GPIO%d/%d/%d/%d (MCPWM group0, 2op x2ch, init=0 deg)",
-             SERVO_COUNT, s_gpios[0], s_gpios[1], s_gpios[2], s_gpios[3]);
+    ESP_LOGI(TAG, "Servo x%d ready on GPIO%d/%d/%d/%d/%d/%d (init=90 deg)",
+             SERVO_COUNT, s_gpios[0], s_gpios[1], s_gpios[2], s_gpios[3], s_gpios[4], s_gpios[5]);
     return ESP_OK;
+}
+
+void servo_set_inverted(int idx, bool inverted)
+{
+    if (idx >= 0 && idx < SERVO_COUNT) {
+        s_inverted[idx] = inverted;
+    }
 }
 
 esp_err_t servo_set_angle(float angle_deg)
@@ -150,14 +161,14 @@ esp_err_t servo_set_angle(float angle_deg)
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
     angle_deg = clamp_angle(angle_deg);
-    uint32_t pulse_us = angle_to_pulse_us(angle_deg);
 
-    for (int i = 0; i < SERVO_COUNT; i++) {
-        mcpwm_comparator_set_compare_value(s_cmprs[i], pulse_us);
+    for (int i = 0; i < BLINDS_COUNT; i++) {
+        float a = s_inverted[i] ? (180.0f - angle_deg) : angle_deg;
+        mcpwm_comparator_set_compare_value(s_cmprs[i], angle_to_pulse_us(a));
     }
 
     s_angle = angle_deg;
-    ESP_LOGI(TAG, "Angle -> %.1f deg (x%d)", angle_deg, SERVO_COUNT);
+    ESP_LOGI(TAG, "Angle -> %.1f deg (blinds x%d)", angle_deg, BLINDS_COUNT);
     return ESP_OK;
 }
 
@@ -175,4 +186,63 @@ void servo_set_mode(servo_mode_t mode)
 servo_mode_t servo_get_mode(void)
 {
     return s_mode;
+}
+
+/* ── 雨棚独立控制 (舵机4&5) ── */
+#define RAIN_SHELTER_IDX0 4
+#define RAIN_SHELTER_IDX1 5
+#define RAIN_SHELTER_SPEED_DELAY_MS  40   /* 每步延时, 控制旋转速度 */
+#define RAIN_SHELTER_ANGLE_STEP      2.0f  /* 每步角度增量 */
+
+static bool s_rain_expanded = false;
+static float s_rain_angle = 90.0f;  /* 雨棚当前角度, 初始90° */
+
+static void rain_shelter_move_to(float target_angle)
+{
+    float cur = s_rain_angle;
+    float step = RAIN_SHELTER_ANGLE_STEP;
+
+    if (cur < target_angle) {
+        for (float a = cur + step; a < target_angle; a += step) {
+            float a0 = s_inverted[RAIN_SHELTER_IDX0] ? (180.0f - a) : a;
+            float a1 = s_inverted[RAIN_SHELTER_IDX1] ? (180.0f - a) : a;
+            mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX0], angle_to_pulse_us(a0));
+            mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX1], angle_to_pulse_us(a1));
+            vTaskDelay(pdMS_TO_TICKS(RAIN_SHELTER_SPEED_DELAY_MS));
+        }
+    } else {
+        for (float a = cur - step; a > target_angle; a -= step) {
+            float a0 = s_inverted[RAIN_SHELTER_IDX0] ? (180.0f - a) : a;
+            float a1 = s_inverted[RAIN_SHELTER_IDX1] ? (180.0f - a) : a;
+            mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX0], angle_to_pulse_us(a0));
+            mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX1], angle_to_pulse_us(a1));
+            vTaskDelay(pdMS_TO_TICKS(RAIN_SHELTER_SPEED_DELAY_MS));
+        }
+    }
+
+    /* 最后精确到位 */
+    float a0 = s_inverted[RAIN_SHELTER_IDX0] ? (180.0f - target_angle) : target_angle;
+    float a1 = s_inverted[RAIN_SHELTER_IDX1] ? (180.0f - target_angle) : target_angle;
+    mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX0], angle_to_pulse_us(a0));
+    mcpwm_comparator_set_compare_value(s_cmprs[RAIN_SHELTER_IDX1], angle_to_pulse_us(a1));
+
+    s_rain_angle = target_angle;
+}
+
+void servo_rain_shelter_set(bool expand)
+{
+    if (!s_initialized) return;
+
+    /* expand=展开(90°), collapse=收起(135°) */
+    float target = expand ? 90.0f : 135.0f;
+
+    rain_shelter_move_to(target);
+
+    s_rain_expanded = expand;
+    ESP_LOGI(TAG, "Rain shelter -> %s (%.0f deg)", expand ? "展开" : "收起", target);
+}
+
+bool servo_rain_shelter_is_expanded(void)
+{
+    return s_rain_expanded;
 }

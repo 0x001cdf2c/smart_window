@@ -10,6 +10,7 @@
     --card: #ffffff;
     --accent: #6c5ce7;
     --green: #00b894;
+    --orange: #e65100;
     --red: #e74c3c;
     --text: #1a1a2e;
     --muted: #9999b0;
@@ -147,11 +148,14 @@
     box-shadow: none; transform: none;
   }
 
-  /* ── 3-column sensors ── */
+  /* ── 5-column sensors ── */
   .sensors-row {
     display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .sensors-row.r3 {
     grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
   }
   .sensor-mini {
     background: var(--card);
@@ -173,6 +177,10 @@
   .sensor-mini.temp::before { background: linear-gradient(90deg, #ff6b6b, #f9ca24); }
   .sensor-mini.humi::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
   .sensor-mini.light::before { background: linear-gradient(90deg, #f9ca24, #ff9f43); }
+  .sensor-mini.smoke::before { background: linear-gradient(90deg, #aaa, #555); }
+  .sensor-mini.airflow::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
+  .sensor-mini.temp_out::before { background: linear-gradient(90deg, #ff6b6b, #f9ca24); }
+  .sensor-mini.humi_out::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
   .sensor-mini .icon { font-size: 22px; margin-bottom: 4px; }
   .sensor-mini .val {
     font-size: 22px; font-weight: 700;
@@ -360,19 +368,46 @@
     </div>
   </div>
 
-  <!-- 3-column sensors: temp, humidity, light -->
+  <!-- Row 1: temperature/humidity (indoor + outdoor) -->
   <div class="sensors-row">
     <div class="sensor-mini temp">
       <div class="icon">🌡️</div>
       <div class="val" id="tempVal">--</div>
-      <div class="unit">°C</div>
-      <div class="lbl">温度</div>
+      <div class="unit">°C 内</div>
+      <div class="lbl">温度(内)</div>
     </div>
     <div class="sensor-mini humi">
       <div class="icon">💧</div>
       <div class="val" id="humiVal">--</div>
+      <div class="unit">% 内</div>
+      <div class="lbl">湿度(内)</div>
+    </div>
+    <div class="sensor-mini temp_out" id="tempOutCard">
+      <div class="icon">🌡️</div>
+      <div class="val" id="tempOutVal">--</div>
+      <div class="unit">°C 外</div>
+      <div class="lbl">温度(外)</div>
+    </div>
+    <div class="sensor-mini humi_out" id="humiOutCard">
+      <div class="icon">💧</div>
+      <div class="val" id="humiOutVal">--</div>
+      <div class="unit">% 外</div>
+      <div class="lbl">湿度(外)</div>
+    </div>
+  </div>
+  <!-- Row 2: smoke, airflow, light (smoke/airflow fake data until ADC arrives) -->
+  <div class="sensors-row r3">
+    <div class="sensor-mini smoke">
+      <div class="icon">💨</div>
+      <div class="val" id="smokeVal">--</div>
       <div class="unit">%</div>
-      <div class="lbl">湿度</div>
+      <div class="lbl">烟雾</div>
+    </div>
+    <div class="sensor-mini airflow">
+      <div class="icon">🌀</div>
+      <div class="val" id="airflowVal">--</div>
+      <div class="unit"></div>
+      <div class="lbl">风速</div>
     </div>
     <div class="sensor-mini light">
       <div class="icon">☀️</div>
@@ -435,6 +470,12 @@
     </button>
     <button class="cmd-btn" onclick="sendCmd('close_blinds')">
       <span class="icon">🪟</span> 关闭
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('rain_expand')">
+      <span class="icon">🏕️</span> 雨棚展开
+    </button>
+    <button class="cmd-btn" onclick="sendCmd('rain_collapse')">
+      <span class="icon">🏕️</span> 雨棚收起
     </button>
     <button class="cmd-btn" onclick="sendCmd('set_temp', {target: 26})">
       <span class="icon">🎯</span> 设置 26°C
@@ -947,6 +988,19 @@ function handleMessage(msg) {
       lightVal.textContent = pl.light;
       lightVal.parentElement.classList.add('updating');
       setTimeout(() => lightVal.parentElement.classList.remove('updating'), 300);
+    }
+    if (pl.temp_out !== undefined) {
+      document.getElementById('tempOutVal').textContent = pl.temp_out.toFixed(1);
+    }
+    if (pl.humidity_out !== undefined) {
+      document.getElementById('humiOutVal').textContent = Math.round(pl.humidity_out) + '%';
+    }
+    if (pl.smoke !== undefined) {
+      document.getElementById('smokeVal').textContent = pl.smoke + '%';
+    }
+    if (pl.airflow !== undefined) {
+      const afEl = document.getElementById('airflowVal');
+      afEl.textContent = pl.airflow === true || pl.airflow === 'true' ? '有风' : '无风';
     }
     if (pl.angle !== undefined) {
       currentAngle = Math.round(Number(pl.angle));

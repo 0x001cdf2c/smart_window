@@ -27,9 +27,13 @@ static lv_obj_t *g_btn_cw      = NULL;
 static lv_obj_t *g_btn_ccw     = NULL;
 static lv_obj_t *g_btn_open    = NULL;
 static lv_obj_t *g_btn_close   = NULL;
-static lv_obj_t *g_lbl_temp    = NULL;
-static lv_obj_t *g_lbl_humi    = NULL;
-static lv_obj_t *g_lbl_light   = NULL;
+static lv_obj_t *g_lbl_temp     = NULL;
+static lv_obj_t *g_lbl_humi     = NULL;
+static lv_obj_t *g_lbl_light    = NULL;
+static lv_obj_t *g_lbl_smoke    = NULL;
+static lv_obj_t *g_lbl_airflow  = NULL;
+static lv_obj_t *g_lbl_temp_out = NULL;
+static lv_obj_t *g_lbl_humi_out = NULL;
 static lv_obj_t *g_lbl_w_city  = NULL;
 static lv_obj_t *g_lbl_w_desc  = NULL;
 static lv_obj_t *g_lbl_w_high  = NULL;
@@ -203,45 +207,67 @@ static void servo_buttons_create(lv_obj_t *screen)
 /* ── Sensor row: T/H/L in one compact card ── */
 static void sensors_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 310, 80);
+    lv_obj_t *card = card_create(screen, 310, 100);
 
-    /* Three columns: x=15, x=205, x=395 */
-    static const int x_pos[] = {15, 205, 395};
-    static const char *icons[] = {"温", "湿", "光"};
-    static const char *units[] = {(const char *)"\xc2\xb0" "C", "%", "lux"};
+    /* Row 1: 温(内), 湿(内), 温(外), 湿(外) */
+    static const int x1[] = {6, 140, 274, 408};
+    static const char *icons1[] = {"温", "湿", "温", "湿"};
 
-    /* Temp */
-    cjk_label_make(card, icons[0], C_MUTED);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[0], 8);
-    g_lbl_temp = label_make(card, "--", C_TEXT, 24);
-    lv_obj_set_pos(g_lbl_temp, x_pos[0] + 25, 12);
-    lv_obj_set_width(g_lbl_temp, 100);
-    label_make(card, units[0], C_MUTED, 12);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[0] + 25, 52);
+    for (int i = 0; i < 4; i++) {
+        cjk_label_make(card, icons1[i], C_MUTED);
+        lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[i], 6);
+    }
 
-    /* Humi */
-    cjk_label_make(card, icons[1], C_MUTED);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[1], 8);
-    g_lbl_humi = label_make(card, "--", C_TEXT, 24);
-    lv_obj_set_pos(g_lbl_humi, x_pos[1] + 25, 12);
-    lv_obj_set_width(g_lbl_humi, 100);
-    label_make(card, units[1], C_MUTED, 12);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[1] + 25, 52);
+    g_lbl_temp  = label_make(card, "--", C_TEXT, 22);
+    lv_obj_set_pos(g_lbl_temp, x1[0] + 25, 10);
+    lv_obj_set_width(g_lbl_temp, 85);
+    cjk_label_make(card, "内", C_GREEN);
+    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[0] + 25, 42);
 
-    /* Light */
-    cjk_label_make(card, icons[2], C_MUTED);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[2], 8);
-    g_lbl_light = label_make(card, "--", C_TEXT, 24);
-    lv_obj_set_pos(g_lbl_light, x_pos[2] + 25, 12);
-    lv_obj_set_width(g_lbl_light, 100);
-    label_make(card, units[2], C_MUTED, 12);
-    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x_pos[2] + 25, 52);
+    g_lbl_humi  = label_make(card, "--", C_TEXT, 22);
+    lv_obj_set_pos(g_lbl_humi, x1[1] + 25, 10);
+    lv_obj_set_width(g_lbl_humi, 85);
+    cjk_label_make(card, "内", C_GREEN);
+    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[1] + 25, 42);
+
+    g_lbl_temp_out = label_make(card, "--", C_TEXT, 22);
+    lv_obj_set_pos(g_lbl_temp_out, x1[2] + 25, 10);
+    lv_obj_set_width(g_lbl_temp_out, 85);
+    cjk_label_make(card, "外", C_MUTED);
+    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[2] + 25, 42);
+
+    g_lbl_humi_out = label_make(card, "--", C_TEXT, 22);
+    lv_obj_set_pos(g_lbl_humi_out, x1[3] + 25, 10);
+    lv_obj_set_width(g_lbl_humi_out, 85);
+    cjk_label_make(card, "外", C_MUTED);
+    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[3] + 25, 42);
+
+    /* Row 2: 烟, 风, 光 */
+    static const int x2[] = {6, 196, 386};
+    static const char *icons2[] = {"烟", "风", "光"};
+
+    for (int i = 0; i < 3; i++) {
+        cjk_label_make(card, icons2[i], C_MUTED);
+        lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x2[i], 56);
+    }
+
+    g_lbl_smoke = label_make(card, "--", C_TEXT, 20);
+    lv_obj_set_pos(g_lbl_smoke, x2[0] + 25, 60);
+    lv_obj_set_width(g_lbl_smoke, 140);
+
+    g_lbl_airflow = label_make(card, "--", C_MUTED, 20);
+    lv_obj_set_pos(g_lbl_airflow, x2[1] + 25, 60);
+    lv_obj_set_width(g_lbl_airflow, 140);
+
+    g_lbl_light = label_make(card, "--", C_TEXT, 20);
+    lv_obj_set_pos(g_lbl_light, x2[2] + 25, 60);
+    lv_obj_set_width(g_lbl_light, 140);
 }
 
 /* ── Weather card ── */
 static void weather_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 400, 130);
+    lv_obj_t *card = card_create(screen, 420, 130);
 
     lv_obj_t *icon = label_make(card, "", C_MUTED, 32);
     lv_label_set_text(icon, LV_SYMBOL_WIFI);  // placeholder
@@ -277,11 +303,11 @@ static void weather_create(lv_obj_t *screen)
 /* ── Command buttons (side by side) ── */
 static void commands_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 540, 90);
+    lv_obj_t *card = card_create(screen, 565, 90);
 
     /* Open */
     g_btn_open = lv_btn_create(card);
-    lv_obj_set_size(g_btn_open, 265, 60);
+    lv_obj_set_size(g_btn_open, 170, 60);
     lv_obj_set_pos(g_btn_open, 15, 15);
     lv_obj_set_style_radius(g_btn_open, 16, 0);
     lv_obj_set_style_bg_color(g_btn_open, C_GREEN, 0);
@@ -294,8 +320,8 @@ static void commands_create(lv_obj_t *screen)
 
     /* Close */
     g_btn_close = lv_btn_create(card);
-    lv_obj_set_size(g_btn_close, 265, 60);
-    lv_obj_set_pos(g_btn_close, 295, 15);
+    lv_obj_set_size(g_btn_close, 170, 60);
+    lv_obj_set_pos(g_btn_close, 195, 15);
     lv_obj_set_style_radius(g_btn_close, 16, 0);
     lv_obj_set_style_bg_color(g_btn_close, C_RED, 0);
     lv_obj_set_style_shadow_width(g_btn_close, 6, 0);
@@ -304,12 +330,36 @@ static void commands_create(lv_obj_t *screen)
     lv_obj_add_event_cb(g_btn_close, on_btn_event, LV_EVENT_CLICKED, (void *)"close");
     l = cjk_label_make(g_btn_close, "关闭", lv_color_hex(0xFFFFFF));
     lv_obj_center(l);
+
+    /* Rain shelter label */
+    cjk_label_make(card, "雨棚", C_MUTED);
+    lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), 385, 8);
+
+    /* Rain shelter expand */
+    lv_obj_t *btn_exp = lv_btn_create(card);
+    lv_obj_set_size(btn_exp, 75, 55);
+    lv_obj_set_pos(btn_exp, 380, 26);
+    lv_obj_set_style_radius(btn_exp, 14, 0);
+    lv_obj_set_style_bg_color(btn_exp, C_ACCENT, 0);
+    lv_obj_add_event_cb(btn_exp, on_btn_event, LV_EVENT_CLICKED, (void *)"rain_expand");
+    l = cjk_label_make(btn_exp, "展开", lv_color_hex(0xFFFFFF));
+    lv_obj_center(l);
+
+    /* Rain shelter collapse */
+    lv_obj_t *btn_col = lv_btn_create(card);
+    lv_obj_set_size(btn_col, 75, 55);
+    lv_obj_set_pos(btn_col, 465, 26);
+    lv_obj_set_style_radius(btn_col, 14, 0);
+    lv_obj_set_style_bg_color(btn_col, C_ORANGE, 0);
+    lv_obj_add_event_cb(btn_col, on_btn_event, LV_EVENT_CLICKED, (void *)"rain_collapse");
+    l = cjk_label_make(btn_col, "收起", lv_color_hex(0xFFFFFF));
+    lv_obj_center(l);
 }
 
 /* ── Mode info & schedule card ── */
 static void mode_info_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 640, 150);
+    lv_obj_t *card = card_create(screen, 670, 150);
 
     lv_obj_t *icon = label_make(card, LV_SYMBOL_HOME, C_ACCENT, 24);
     lv_obj_set_pos(icon, 15, 15);
@@ -350,7 +400,7 @@ static lv_obj_t *g_btn_mode_adaptive = NULL;
 
 static void timer_schedule_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 800, 100);
+    lv_obj_t *card = card_create(screen, 830, 100);
 
     lv_obj_t *icon = label_make(card, LV_SYMBOL_LIST, C_ACCENT, 24);
     lv_obj_set_pos(icon, 15, 15);
@@ -379,7 +429,7 @@ static void timer_schedule_create(lv_obj_t *screen)
 /* ── Bottom mode control row ── */
 static void mode_control_create(lv_obj_t *screen)
 {
-    lv_obj_t *card = card_create(screen, 910, 70);
+    lv_obj_t *card = card_create(screen, 945, 70);
 
     lv_obj_t *lbl = cjk_label_make(card, "控制", C_MUTED);
     lv_obj_set_pos(lbl, 15, 12);
@@ -450,12 +500,37 @@ void ui_init(void)
 }
 
 /* ── Update functions ── */
-void ui_update_sensor(float temp, float humidity, int light)
+void ui_update_sensor(float t_in, float h_in, float t_out, float h_out, int light)
 {
     char buf[16];
-    if (g_lbl_temp)  { snprintf(buf, sizeof(buf), "%.1f", temp); lv_label_set_text(g_lbl_temp, buf); }
-    if (g_lbl_humi)  { snprintf(buf, sizeof(buf), "%.0f", humidity); lv_label_set_text(g_lbl_humi, buf); }
-    if (g_lbl_light) { snprintf(buf, sizeof(buf), "%d", light); lv_label_set_text(g_lbl_light, buf); }
+    if (g_lbl_temp)     { snprintf(buf, sizeof(buf), "%.1f", t_in);  lv_label_set_text(g_lbl_temp, buf); }
+    if (g_lbl_humi)     { snprintf(buf, sizeof(buf), "%.0f", h_in);  lv_label_set_text(g_lbl_humi, buf); }
+    if (g_lbl_temp_out) { snprintf(buf, sizeof(buf), "%.1f", t_out); lv_label_set_text(g_lbl_temp_out, buf); }
+    if (g_lbl_humi_out) { snprintf(buf, sizeof(buf), "%.0f", h_out); lv_label_set_text(g_lbl_humi_out, buf); }
+    if (g_lbl_light)    { snprintf(buf, sizeof(buf), "%d", light);   lv_label_set_text(g_lbl_light, buf); }
+}
+
+void ui_update_smoke(int smoke)
+{
+    if (g_lbl_smoke) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", smoke);
+        lv_label_set_text(g_lbl_smoke, buf);
+
+        lv_color_t color;
+        if (smoke <= 30)       color = C_GREEN;
+        else if (smoke <= 60)  color = C_ORANGE;
+        else                   color = C_RED;
+        lv_obj_set_style_text_color(g_lbl_smoke, color, 0);
+    }
+}
+
+void ui_update_airflow(bool has_airflow)
+{
+    if (g_lbl_airflow) {
+        lv_label_set_text(g_lbl_airflow, has_airflow ? "有风" : "无风");
+        lv_obj_set_style_text_color(g_lbl_airflow, has_airflow ? C_BLUE : C_MUTED, 0);
+    }
 }
 
 void ui_update_weather(const char *city, const char *weather, int high, int low, int rain_pct)

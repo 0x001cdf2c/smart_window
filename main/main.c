@@ -16,6 +16,8 @@
 #include "servo_manager.h"
 #include "sht3x.h"
 #include "bh1750.h"
+#include "smoke_sensor.h"
+#include "airflow_sensor.h"
 #include "display.h"
 #include "ui.h"
 #include "camera_capture.h"
@@ -38,7 +40,11 @@ static bool g_auto_running = false;
 /* ── 传感器数据缓存 (供控制算法查询) ── */
 static float s_last_temp  = 0.0f;
 static float s_last_humi  = 0.0f;
+static float s_last_temp_out = 0.0f;
+static float s_last_humi_out = 0.0f;
 static float s_last_light = 0.0f;
+static int   s_last_smoke = 0;
+static bool  s_last_airflow = false;
 
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
@@ -120,6 +126,10 @@ static void on_ui_action(const char *action)
             control_timer_remove_one_shot(n - 1);
             ESP_LOGI(TAG, "Screen: deleted last one-shot timer (idx %d)", n - 1);
         }
+    } else if (strcmp(action, "rain_expand") == 0) {
+        servo_rain_shelter_set(true);
+    } else if (strcmp(action, "rain_collapse") == 0) {
+        servo_rain_shelter_set(false);
     }
 }
 
@@ -180,9 +190,6 @@ static void network_init_task(void *arg)
     } else {
         ESP_LOGW(TAG, "摄像头初始化失败");
     }
-
-    /* 传感器上报任务 (网络就绪后启动) */
-    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "网络初始化完成");
     vTaskDelete(NULL);
@@ -385,6 +392,12 @@ static void handle_web_command(const char *json_str)
         voice_reply_say("关闭窗帘");
         control_adaptive_record("close");
 
+    } else if (strcmp(cmd, "rain_expand") == 0) {
+        servo_rain_shelter_set(true);
+
+    } else if (strcmp(cmd, "rain_collapse") == 0) {
+        servo_rain_shelter_set(false);
+
     } else if (strcmp(cmd, "voice_cmd") == 0) {
         cJSON *text_item = cJSON_GetObjectItem(root, "text");
         if (text_item && text_item->valuestring) {
@@ -581,32 +594,38 @@ static void sensor_task(void *arg)
         float angle = servo_get_angle();
         const char *mode_str = servo_get_mode() == SERVO_MODE_AUTO ? "auto" : "manual";
 
-        /* 真实温湿度传感器数据 (SHT3x) */
-        sht3x_data_t sht;
-        float temp_f = 0;
-        float humi_f = 0;
-        if (sht3x_read(&sht)) {
-            temp_f = sht.temperature;
-            humi_f = sht.humidity;
-            ESP_LOGI(TAG, "SHT3x OK: T=%.1f H=%.0f", temp_f, humi_f);
-        } else {
-            ESP_LOGW(TAG, "SHT3x read failed");
+        /* 双温湿度传感器 (室内 SHT3x@0x44, 室外 SHT3x@0x45) */
+        sht3x_data_t sht_in = {0}, sht_out = {0};
+        float t_in = 0, h_in = 0, t_out = 0, h_out = 0;
+        if (sht3x_read(SHT3X_INDOOR, &sht_in)) {
+            t_in = sht_in.temperature; h_in = sht_in.humidity;
+            ESP_LOGI(TAG, "SHT3x[内]: T=%.1f H=%.0f", t_in, h_in);
+        }
+        if (sht3x_read(SHT3X_OUTDOOR, &sht_out)) {
+            t_out = sht_out.temperature; h_out = sht_out.humidity;
+            ESP_LOGI(TAG, "SHT3x[外]: T=%.1f H=%.0f", t_out, h_out);
         }
         /* 真实光照数据 (BH1750) */
         float lux_f = 0;
         bh1750_read(&lux_f);
         int light = (int)lux_f;
 
+        /* 烟雾/气流 — 暂时用假数据, 等ADC模块到了再接入真实传感器 */
+        s_last_smoke = 15;    /* 假数据: 15% */
+        s_last_airflow = true; /* 假数据: 有风 */
+
         /* 缓存传感器值供命令响应使用 */
-        s_last_temp  = temp_f;
-        s_last_humi  = humi_f;
-        s_last_light = lux_f;
+        s_last_temp     = t_in;
+        s_last_humi     = h_in;
+        s_last_temp_out = t_out;
+        s_last_humi_out = h_out;
+        s_last_light    = lux_f;
 
         /* ── 环境感知模式: 传感器驱动窗户 ── */
         if (control_get_mode() == CONTROL_MODE_ENV) {
-            env_action_t act = control_env_evaluate(temp_f, humi_f, lux_f);
+            env_action_t act = control_env_evaluate(t_in, h_in, lux_f);
             if (act == ENV_ACTION_OPEN) {
-                float tgt = control_env_target_angle(temp_f, humi_f, lux_f);
+                float tgt = control_env_target_angle(t_in, h_in, lux_f);
                 servo_set_angle(tgt);
             } else if (act == ENV_ACTION_CLOSE) {
                 servo_set_angle(90.0f);
@@ -636,7 +655,9 @@ static void sensor_task(void *arg)
 
         /* Update LVGL UI (thread-safe with lv_lock) */
         display_lvgl_lock();
-        ui_update_sensor(temp_f, humi_f, light);
+        ui_update_sensor(t_in, h_in, t_out, h_out, light);
+        ui_update_smoke(s_last_smoke);
+        ui_update_airflow(s_last_airflow);
         ui_update_mode(servo_get_mode() == SERVO_MODE_AUTO);
 
         /* Build mode info for screen */
@@ -659,7 +680,7 @@ static void sensor_task(void *arg)
                 break;
             case CONTROL_MODE_ENV:
                 snprintf(detail, sizeof(detail), "自动: 温%.1f 湿%.0f 光%d",
-                         temp_f, humi_f, light);
+                         t_in, h_in, light);
                 break;
             case CONTROL_MODE_ADAPTIVE: {
                 const schedule_plan_t *plan = control_adaptive_get_plan();
@@ -745,8 +766,10 @@ static void sensor_task(void *arg)
         char buf[256];
         const char *ctrl_mn = control_mode_name(control_get_mode());
         snprintf(buf, sizeof(buf),
-            "{\"temp\":%.1f,\"humidity\":%.1f,\"light\":%d,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
-            temp_f, humi_f, light, angle, mode_str, ctrl_mn);
+            "{\"temp\":%.1f,\"humidity\":%.1f,\"temp_out\":%.1f,\"humidity_out\":%.1f,\"light\":%d,"
+            "\"smoke\":%d,\"airflow\":%s,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
+            t_in, h_in, t_out, h_out, light, s_last_smoke, s_last_airflow ? "true" : "false",
+            angle, mode_str, ctrl_mn);
         msg_bus_send("sensor_data", buf);
 
         /* 推送自适应模式计划表 */
@@ -932,13 +955,15 @@ void app_main(void)
 
     bool sr_ok = false;
 
-    /* 0. 初始化 4 路舵机 (GPIO20-23, 统一复位到 0°) */
-    int servo_gpios[4] = {20, 21, 22, 23};
+    /* 0. 初始化 6 路舵机 (GPIO20-23=百叶, GPIO32-33=雨棚) */
+    int servo_gpios[6] = {20, 21, 22, 23, 32, 33};
     if (servo_init(servo_gpios) == 0) {
-        servo_set_angle(0.0f);
+        /* 雨棚舵机面对面安装, #5 反转使得两舵机同向转动 */
+        servo_set_inverted(5, true);
+        servo_set_angle(90.0f);
         servo_set_mode(SERVO_MODE_MANUAL);
         g_auto_running = false;
-        ESP_LOGI(TAG, "舵机 x4 就绪 (GPIO20-23, 角度=0°)");
+        ESP_LOGI(TAG, "舵机 x6 就绪 (GPIO20-23,32-33, 初始=90°)");
     } else {
         ESP_LOGW(TAG, "舵机初始化失败");
     }
@@ -991,14 +1016,19 @@ void app_main(void)
     /* TTS 播放独立于语音识别 — ES8311/I2S 已在 sr_init 中初始化 */
     voice_reply_init(GPIO_NUM_9);
 
-    /* ── Phase 4: I2C sensors ── */
+    /* ── Phase 4: I2C sensors (after ES8311, matching original proven order) ── */
     if (!sht3x_init()) {
         ESP_LOGW(TAG, "SHT3x 初始化失败");
     }
     if (!bh1750_init()) {
         ESP_LOGW(TAG, "BH1750 初始化失败");
     }
-    ESP_LOGI(TAG, "Sensors ready");
+    smoke_sensor_init();
+    airflow_sensor_init();
+
+    /* 传感器任务 — 所有 I2C 设备就绪后启动 (msg_bus_send 在未连接时安全返回 -1) */
+    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "Sensor task started");
 
     /* I2C bus handle stays valid — all devices share it.
        Sensors+touch already have their handles; camera SCCB creates its own later. */
@@ -1012,6 +1042,6 @@ void app_main(void)
     /* 5. 定时器 tick (每秒检查一次) */
     xTaskCreate(timer_tick_task, "timer_tick", 2048, NULL, 3, NULL);
 
-    ESP_LOGI(TAG, "系统就绪 (语音=%s, 网络=后台连接中, 舵机x4=GPIO20-23)",
+    ESP_LOGI(TAG, "系统就绪 (语音=%s, 网络=后台连接中, 舵机x6=GPIO20-23,32-33)",
              sr_ok ? "ON" : "OFF");
 }
