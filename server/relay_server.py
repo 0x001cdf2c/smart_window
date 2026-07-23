@@ -254,9 +254,6 @@ def fetch_asr(pcm_data: bytes, sample_rate: int = 16000) -> str | None:
             "appkey": appkey,
             "format": "pcm",
             "sample_rate": str(sample_rate),
-            "enable_punctuation_prediction": "true",
-            "enable_inverse_text_normalization": "true",
-            "enable_voice_detection": "false",  # Already VAD'd on device
         }
         headers = {
             "X-NLS-Token": token,
@@ -264,13 +261,15 @@ def fetch_asr(pcm_data: bytes, sample_rate: int = 16000) -> str | None:
         }
         resp = requests.post(url, params=params, headers=headers,
                              data=pcm_data, timeout=15)
+        if resp.status_code != 200:
+            log("ASR", f"API返回 {resp.status_code}: {resp.text[:300]}")
         resp.raise_for_status()
         result = resp.json()
         text = result.get("result", "").strip()
         if text:
             log("ASR", f"识别结果: {text}")
         else:
-            log("ASR", f"无结果 (status={result.get('status')})")
+            log("ASR", f"无结果 (status={result.get('status')}, full={json.dumps(result, ensure_ascii=False)})")
         return text
     except Exception as e:
         log("ASR", f"识别失败: {e}")
@@ -334,11 +333,38 @@ async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
             audio_buffers.pop(dev_id, None)
             return
 
+        pcm = bytes(buf)
+        audio_buffers.pop(dev_id, None)
+
+        # 保存 WAV 用于调试
+        import struct, os, time as _time
+        debug_dir = "../audio"
+        os.makedirs(debug_dir, exist_ok=True)
+        ts = _time.strftime("%Y%m%d_%H%M%S")
+        wav_path = f"{debug_dir}/{dev_id}_{ts}.wav"
+        with open(wav_path, "wb") as f:
+            # WAV header
+            data_size = len(pcm)
+            f.write(b"RIFF")
+            f.write(struct.pack("<I", 36 + data_size))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(struct.pack("<I", 16))       # chunk size
+            f.write(struct.pack("<H", 1))        # PCM
+            f.write(struct.pack("<H", 1))        # mono
+            f.write(struct.pack("<I", 16000))    # sample rate
+            f.write(struct.pack("<I", 32000))    # byte rate
+            f.write(struct.pack("<H", 2))        # block align
+            f.write(struct.pack("<H", 16))       # bits per sample
+            f.write(b"data")
+            f.write(struct.pack("<I", data_size))
+            f.write(pcm)
+        rms_val = int((sum(s*s for s in struct.unpack(f"<{len(pcm)//2}h", pcm)) / max(len(pcm)//2, 1)) ** 0.5) if len(pcm) >= 2 else 0
+        log("ASR", f"已保存: {wav_path} ({len(pcm)} bytes, RMS={rms_val})")
+
         loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=1) as pool:
-            text = await loop.run_in_executor(pool, fetch_asr, bytes(buf))
-
-        audio_buffers.pop(dev_id, None)
+            text = await loop.run_in_executor(pool, fetch_asr, pcm)
 
         if not text:
             await send_to_device(dev_id, {"type": "asr_result", "text": ""})

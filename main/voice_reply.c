@@ -54,7 +54,6 @@ static void tts_task(void *arg)
             } else {
                 ESP_LOGW(TAG, "TTS 解析失败: %s", text);
             }
-
             vTaskDelay(pdMS_TO_TICKS(60));
             free(text);
         }
@@ -86,8 +85,21 @@ int voice_reply_init(int dout_gpio)
         return -1;
     }
 
+    /* TX 通道开启一次, 之后不再开关 (避免干扰 I2S 共享时钟导致 WiFi 断连) */
+    i2s_channel_enable(tx_chan);
     sr_recover_rx();
     sr_configure_playback();
+
+    /* PA (功放) 控制: GPIO53 高电平使能 */
+    gpio_config_t pa_cfg = {
+        .pin_bit_mask = BIT64(PA_CTRL_GPIO),
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&pa_cfg);
+    gpio_set_level(PA_CTRL_GPIO, 1);
 
     /* 预分配立体声缓冲, 避免播放时反复 malloc/free */
     s_stereo_buf = calloc(STEREO_BUF_MAX * 2, sizeof(int16_t));
@@ -95,16 +107,6 @@ int voice_reply_init(int dout_gpio)
         ESP_LOGE(TAG, "立体声缓冲分配失败");
         return -1;
     }
-
-    /* TX 通道开启一次, 之后不再开关 (避免干扰 I2S 共享时钟导致 WiFi 断连) */
-    esp_err_t ret = i2s_channel_enable(tx_chan);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "TX 启用失败: %s", esp_err_to_name(ret));
-        free(s_stereo_buf);
-        return -1;
-    }
-
-    // gpio_set_level(PA_CTRL_GPIO, 1);  // 暂禁用, GPIO53 给烟雾传感器
 
     tts_queue = xQueueCreate(TTS_QUEUE_LEN, sizeof(char *));
     xTaskCreate(tts_task, "tts_task", 4096, NULL, 5, NULL);

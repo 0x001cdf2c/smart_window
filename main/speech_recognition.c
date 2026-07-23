@@ -408,7 +408,14 @@ static int16_t *afe_buf = NULL;   /* 提取左声道后喂给 AFE */
 
 void sr_poll(void)
 {
-    if (!rx_chan || !afe_data || !afe_handle) return;
+    if (!rx_chan || !afe_data || !afe_handle) {
+        static int err_cnt = 0;
+        if (++err_cnt <= 3) {
+            ESP_LOGW(TAG, "sr_poll skip: rx=%p afe_data=%p afe_hdl=%p",
+                     (void*)rx_chan, (void*)afe_data, (void*)afe_handle);
+        }
+        return;
+    }
 
     int mono_samples = feed_channels * feed_chunksize;
     int stereo_samples = mono_samples * 2;
@@ -435,7 +442,14 @@ void sr_poll(void)
     esp_err_t ret = i2s_channel_read(rx_chan, i2s_buf,
                                       stereo_samples * sizeof(int16_t),
                                       &bytes_read, pdMS_TO_TICKS(100));
-    if (ret != ESP_OK || bytes_read == 0) return;
+    if (ret != ESP_OK || bytes_read == 0) {
+        static int i2s_err_cnt = 0;
+        if (++i2s_err_cnt <= 3) {
+            ESP_LOGW(TAG, "i2s read fail: ret=%s bytes=%u",
+                     esp_err_to_name(ret), (unsigned)bytes_read);
+        }
+        return;
+    }
 
     /* 立体声 → 单声道: 取左声道 */
     for (int i = 0; i < mono_samples; i++) {
@@ -570,6 +584,7 @@ void sr_poll(void)
 
         /* 优先走音频流 → 云端 ASR, 回退到本地 MultiNet */
         if (on_audio) {
+            vTaskDelay(pdMS_TO_TICKS(800));  /* 等待 TTS "我在" 播完 */
             streaming = true;
             stream_len = 0;
             stream_silence_ms = 0;
