@@ -178,7 +178,8 @@
   .sensor-mini.humi::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
   .sensor-mini.light::before { background: linear-gradient(90deg, #f9ca24, #ff9f43); }
   .sensor-mini.smoke::before { background: linear-gradient(90deg, #aaa, #555); }
-  .sensor-mini.airflow::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
+  .sensor-mini.airflow::before { background: linear-gradient(90deg, #48dbfb, #0abde3); }
+  .sensor-mini.rain::before { background: linear-gradient(90deg, #3498db, #2c3e50); }
   .sensor-mini.temp_out::before { background: linear-gradient(90deg, #ff6b6b, #f9ca24); }
   .sensor-mini.humi_out::before { background: linear-gradient(90deg, #54a0ff, #5f27cd); }
   .sensor-mini .icon { font-size: 22px; margin-bottom: 4px; }
@@ -395,22 +396,28 @@
       <div class="lbl">湿度(外)</div>
     </div>
   </div>
-  <!-- Row 2: smoke, airflow, light (smoke/airflow fake data until ADC arrives) -->
+  <!-- Row 2: smoke, rain, airflow, light -->
   <div class="sensors-row r3">
     <div class="sensor-mini smoke">
-      <div class="icon">💨</div>
+      <div class="icon">&#x1F4A8;</div>
       <div class="val" id="smokeVal">--</div>
       <div class="unit">%</div>
       <div class="lbl">烟雾</div>
     </div>
+    <div class="sensor-mini rain">
+      <div class="icon">&#x1F327;</div>
+      <div class="val" id="rainVal">--</div>
+      <div class="unit">%</div>
+      <div class="lbl">雨水</div>
+    </div>
     <div class="sensor-mini airflow">
-      <div class="icon">🌀</div>
+      <div class="icon">&#x1F32C;</div>
       <div class="val" id="airflowVal">--</div>
       <div class="unit"></div>
       <div class="lbl">风速</div>
     </div>
     <div class="sensor-mini light">
-      <div class="icon">☀️</div>
+      <div class="icon">&#x2600;</div>
       <div class="val" id="lightVal">--</div>
       <div class="unit">lux</div>
       <div class="lbl">光照</div>
@@ -505,6 +512,9 @@
     </button>
     <button class="cmd-btn mode-btn" id="modeTimer" onclick="setControlMode('timer')">
       <span class="icon">⏰</span> 定时
+    </button>
+    <button class="cmd-btn mode-btn" id="modeNatural" onclick="setControlMode('natural')">
+      <span class="icon">💨</span> 自然风
     </button>
   </div>
 
@@ -998,6 +1008,9 @@ function handleMessage(msg) {
     if (pl.smoke !== undefined) {
       document.getElementById('smokeVal').textContent = pl.smoke + '%';
     }
+    if (pl.rain !== undefined) {
+      document.getElementById('rainVal').textContent = pl.rain + '%';
+    }
     if (pl.airflow !== undefined) {
       const afEl = document.getElementById('airflowVal');
       afEl.textContent = pl.airflow === true || pl.airflow === 'true' ? '有风' : '无风';
@@ -1116,6 +1129,7 @@ function setControlMode(mode) {
     else if (mode === 'env') { active.style.background = '#d5f5e3'; active.style.borderColor = '#81c784'; active.style.color = '#27ae60'; }
     else if (mode === 'adaptive') { active.style.background = '#ede7f6'; active.style.borderColor = '#b39ddb'; active.style.color = '#5f27cd'; }
     else if (mode === 'timer') { active.style.background = '#e3f2fd'; active.style.borderColor = '#64b5f6'; active.style.color = '#1565c0'; }
+    else if (mode === 'natural') { active.style.background = '#e0f7fa'; active.style.borderColor = '#4dd0e1'; active.style.color = '#00838f'; }
   }
 
   /* Show/hide sub-cards */
@@ -1149,6 +1163,7 @@ function setControlModeUI(mode) {
     else if (mode === 'env') { active.style.background = '#d5f5e3'; active.style.borderColor = '#81c784'; active.style.color = '#27ae60'; }
     else if (mode === 'adaptive') { active.style.background = '#ede7f6'; active.style.borderColor = '#b39ddb'; active.style.color = '#5f27cd'; }
     else if (mode === 'timer') { active.style.background = '#e3f2fd'; active.style.borderColor = '#64b5f6'; active.style.color = '#1565c0'; }
+    else if (mode === 'natural') { active.style.background = '#e0f7fa'; active.style.borderColor = '#4dd0e1'; active.style.color = '#00838f'; }
   }
   document.getElementById('timerCard').style.display = (mode === 'timer') ? 'block' : 'none';
   document.getElementById('scheduleCard').style.display =

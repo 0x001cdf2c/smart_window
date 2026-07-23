@@ -45,8 +45,13 @@ void i2c_bus_recover(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Recovering I2C bus (GPIO unstick, preserving bus handle)...");
+    ESP_LOGI(TAG, "Recovering I2C bus (GPIO unstick + bus re-init)...");
 
+    /* Delete old bus handle — device handles become invalid */
+    i2c_del_master_bus(s_bus_handle);
+    s_bus_handle = NULL;
+
+    /* Unstick SDA with GPIO bit-banging */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << I2C_BUS_SDA) | (1ULL << I2C_BUS_SCL),
         .mode = GPIO_MODE_OUTPUT_OD,
@@ -80,5 +85,12 @@ void i2c_bus_recover(void)
     gpio_set_level(I2C_BUS_SDA, 1);
     esp_rom_delay_us(10);
 
-    ESP_LOGI(TAG, "I2C bus recovery complete (bus handle preserved)");
+    /* Re-init I2C bus — GPIO pins return to I2C controller */
+    esp_err_t ret = i2c_bus_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Bus re-init failed after recovery");
+    } else {
+        ESP_LOGI(TAG, "I2C bus recovered and re-initialized "
+                 "(all device handles invalidated — must re-add devices)");
+    }
 }

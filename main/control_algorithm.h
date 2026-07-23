@@ -11,6 +11,7 @@ typedef enum {
     CONTROL_MODE_ENV,
     CONTROL_MODE_ADAPTIVE,
     CONTROL_MODE_TIMER,
+    CONTROL_MODE_NATURAL,
 } control_mode_t;
 
 typedef enum {

@@ -1,0 +1,32 @@
+﻿dependencies:
+  espressif/esp_video:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/esp-video-components/esp_video
+
+  espressif/esp_cam_sensor:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/esp-video-components/esp_cam_sensor
+
+  espressif/esp_sccb_intf:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/esp-video-components/esp_sccb_intf
+
+  espressif/esp_wifi_remote:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/p4_wifi_station/managed_components/espressif__esp_wifi_remote
+
+  espressif/esp_hosted:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/p4_wifi_station/managed_components/espressif__esp_hosted
+
+  espressif/wifi_remote_over_eppp:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/p4_wifi_station/managed_components/espressif__wifi_remote_over_eppp
+
+  espressif/eppp_link:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/p4_wifi_station/managed_components/espressif__eppp_link
+
+  espressif/esp_serial_slave_link:
+    version: "*"
+    override_path: E:/study/26Summervacation/wulianwang/demo/p4_wifi_station/managed_components/espressif__esp_serial_slave_link

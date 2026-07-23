@@ -140,6 +140,7 @@ const char *control_mode_name(control_mode_t mode)
     case CONTROL_MODE_ENV:      return "env";
     case CONTROL_MODE_ADAPTIVE: return "adaptive";
     case CONTROL_MODE_TIMER:    return "timer";
+    case CONTROL_MODE_NATURAL:  return "natural";
     default:                    return "unknown";
     }
 }

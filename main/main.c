@@ -18,12 +18,15 @@
 #include "bh1750.h"
 #include "smoke_sensor.h"
 #include "airflow_sensor.h"
+#include "rain_sensor.h"
+#include "adc_ads1115.h"
 #include "display.h"
 #include "ui.h"
 #include "camera_capture.h"
 #include "http_server_cam.h"
 #include "i2c_bus.h"
 #include "control_algorithm.h"
+#include "wind_scanner.h"
 #include <time.h>
 #include <mbedtls/base64.h>
 #include "lwip/apps/sntp.h"
@@ -45,6 +48,7 @@ static float s_last_humi_out = 0.0f;
 static float s_last_light = 0.0f;
 static int   s_last_smoke = 0;
 static bool  s_last_airflow = false;
+static int   s_last_rain = 0;
 
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
@@ -118,6 +122,12 @@ static void on_ui_action(const char *action)
         control_set_mode(CONTROL_MODE_ADAPTIVE);
         display_lvgl_lock();
         ui_update_mode_highlight("adaptive");
+        display_lvgl_unlock();
+    } else if (strcmp(action, "mode_natural") == 0) {
+        control_set_mode(CONTROL_MODE_NATURAL);
+        wind_scanner_start();
+        display_lvgl_lock();
+        ui_update_mode_highlight("natural");
         display_lvgl_unlock();
     } else if (strcmp(action, "timer_del_last") == 0) {
         oneshot_t shots[ONE_SHOT_MAX];
@@ -471,6 +481,9 @@ static void handle_web_command(const char *json_str)
                 control_set_mode(CONTROL_MODE_ADAPTIVE);
             } else if (strcmp(mode_item->valuestring, "timer") == 0) {
                 control_set_mode(CONTROL_MODE_TIMER);
+            } else if (strcmp(mode_item->valuestring, "natural") == 0) {
+                control_set_mode(CONTROL_MODE_NATURAL);
+                wind_scanner_start();
             } else {
                 control_set_mode(CONTROL_MODE_MANUAL);
             }
@@ -610,9 +623,18 @@ static void sensor_task(void *arg)
         bh1750_read(&lux_f);
         int light = (int)lux_f;
 
-        /* 烟雾/气流 — 暂时用假数据, 等ADC模块到了再接入真实传感器 */
-        s_last_smoke = 15;    /* 假数据: 15% */
-        s_last_airflow = true; /* 假数据: 有风 */
+        /* 烟雾/雨水/气流 — 真实传感器读数 */
+        {
+            int smoke = 0, rain = 0;
+            bool air = false;
+            smoke_sensor_read(&smoke);
+            rain_sensor_read(&rain);
+            airflow_sensor_read(&air);
+            s_last_smoke   = smoke;
+            s_last_rain    = rain;
+            s_last_airflow = air;
+            ESP_LOGI(TAG, "Smoke=%d Rain=%d Airflow=%d", smoke, rain, air);
+        }
 
         /* 缓存传感器值供命令响应使用 */
         s_last_temp     = t_in;
@@ -653,10 +675,30 @@ static void sensor_task(void *arg)
             }
         }
 
+        /* ── 自然风模式: 扫描风向, 每5分钟重新扫描 ── */
+        if (control_get_mode() == CONTROL_MODE_NATURAL) {
+            static time_t s_last_scan = 0;
+            time_t now = time(NULL);
+
+            /* Apply new scan result if available */
+            int best = 0;
+            if (wind_scanner_try_apply(&best)) {
+                servo_set_angle((float)best);
+                ESP_LOGI(TAG, "自然风: 最佳角度=%d°", best);
+                s_last_scan = now;
+            }
+
+            /* Trigger re-scan every 5 minutes if not already scanning */
+            if (!wind_scanner_is_scanning() && (now - s_last_scan) >= 300) {
+                wind_scanner_start();
+            }
+        }
+
         /* Update LVGL UI (thread-safe with lv_lock) */
         display_lvgl_lock();
         ui_update_sensor(t_in, h_in, t_out, h_out, light);
         ui_update_smoke(s_last_smoke);
+        ui_update_rain(s_last_rain);
         ui_update_airflow(s_last_airflow);
         ui_update_mode(servo_get_mode() == SERVO_MODE_AUTO);
 
@@ -669,6 +711,7 @@ static void sensor_task(void *arg)
             case CONTROL_MODE_ENV:      mn = "环境"; break;
             case CONTROL_MODE_ADAPTIVE: mn = "自适应"; break;
             case CONTROL_MODE_TIMER:    mn = "定时"; break;
+            case CONTROL_MODE_NATURAL:  mn = "自然风"; break;
             default:                    mn = "未知"; break;
             }
             char detail[64] = "";
@@ -736,6 +779,19 @@ static void sensor_task(void *arg)
                     snprintf(detail, sizeof(detail), "定时已关闭");
                 break;
             }
+            case CONTROL_MODE_NATURAL: {
+                int best = wind_scanner_get_best();
+                int cur = wind_scanner_get_current_angle();
+                if (wind_scanner_is_scanning() && cur >= 0)
+                    snprintf(detail, sizeof(detail), "扫描: %d度", cur);
+                else if (wind_scanner_is_scanning())
+                    snprintf(detail, sizeof(detail), "扫描中...");
+                else if (best >= 0)
+                    snprintf(detail, sizeof(detail), "风向: %d度", best);
+                else
+                    snprintf(detail, sizeof(detail), "等待扫描...");
+                break;
+            }
             default:
                 break;
             }
@@ -767,8 +823,8 @@ static void sensor_task(void *arg)
         const char *ctrl_mn = control_mode_name(control_get_mode());
         snprintf(buf, sizeof(buf),
             "{\"temp\":%.1f,\"humidity\":%.1f,\"temp_out\":%.1f,\"humidity_out\":%.1f,\"light\":%d,"
-            "\"smoke\":%d,\"airflow\":%s,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
-            t_in, h_in, t_out, h_out, light, s_last_smoke, s_last_airflow ? "true" : "false",
+            "\"smoke\":%d,\"rain\":%d,\"airflow\":%s,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
+            t_in, h_in, t_out, h_out, light, s_last_smoke, s_last_rain, s_last_airflow ? "true" : "false",
             angle, mode_str, ctrl_mn);
         msg_bus_send("sensor_data", buf);
 
@@ -971,18 +1027,20 @@ void app_main(void)
     /* ── Phase 1: I2C bus + Display ── */
     i2c_bus_init();
 
-    /* Quick I2C scan using i2c_master_probe */
+    /* Targeted I2C scan — only probe known addresses to avoid bus lockup */
     {
         i2c_master_bus_handle_t bus = i2c_bus_get_handle();
+        const uint8_t known_addrs[] = {0x18, 0x23, 0x2C, 0x44, 0x48, 0x5D};
         int found = 0;
-        ESP_LOGI(TAG, "I2C scan start...");
-        for (uint8_t addr = 1; addr < 127; addr++) {
-            if (i2c_master_probe(bus, addr, 10) == ESP_OK) {
-                ESP_LOGI(TAG, "I2C device at 0x%02X (%d)", addr, addr);
+        ESP_LOGI(TAG, "I2C scan start (targeted)...");
+        for (int i = 0; i < sizeof(known_addrs); i++) {
+            if (i2c_master_probe(bus, known_addrs[i], 10) == ESP_OK) {
+                ESP_LOGI(TAG, "I2C device at 0x%02X", known_addrs[i]);
                 found++;
             }
         }
-        ESP_LOGI(TAG, "I2C scan done: %d device(s) found", found);
+        ESP_LOGI(TAG, "I2C scan done: %d/%d device(s) found",
+                 found, (int)sizeof(known_addrs));
     }
 
     if (display_init() == ESP_OK) {
@@ -1023,9 +1081,12 @@ void app_main(void)
     if (!bh1750_init()) {
         ESP_LOGW(TAG, "BH1750 初始化失败");
     }
+    if (!ads1115_init()) {
+        ESP_LOGW(TAG, "ADS1115 初始化失败 — 烟雾/雨水传感器不可用");
+    }
     smoke_sensor_init();
     airflow_sensor_init();
-
+    rain_sensor_init();
     /* 传感器任务 — 所有 I2C 设备就绪后启动 (msg_bus_send 在未连接时安全返回 -1) */
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "Sensor task started");
@@ -1044,4 +1105,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "系统就绪 (语音=%s, 网络=后台连接中, 舵机x6=GPIO20-23,32-33)",
              sr_ok ? "ON" : "OFF");
+
+    /* Wind scanner: init last to avoid I2C bus timing conflict */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    wind_scanner_init();
 }

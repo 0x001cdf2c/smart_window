@@ -39,15 +39,61 @@ PowerShell (Windows):
 
 | GPIO | 功能            | 备注                    |
 |------|-----------------|------------------------|
-| 7    | I2C SDA         | ES8311/SHT3x/BH1750/GT911 共享 |
-| 8    | I2C SCL         | 同上                    |
-| 9    | I2S DOUT        | ES8311 语音输出         |
-| 20   | 舵机 1 PWM      | LEDC Channel 1         |
-| 21   | 舵机 2 PWM      | LEDC Channel 2         |
-| 22   | 舵机 3 PWM      | LEDC Channel 3         |
-| 23   | 舵机 4 PWM      | LEDC Channel 4         |
-| 26   | 屏幕背光 PWM    | LEDC Channel 0         |
+| 4    | (空闲)          | 原风速传感器, 已迁移到48  |
+| 5    | SW I2C SDA      | 室外 SHT3x 软件模拟I2C   |
+| 6    | SW I2C SCL      | 室外 SHT3x 软件模拟I2C   |
+| 7    | HW I2C SDA      | 室内SHT3x/BH1750/GT911/ADS1115 共享 |
+| 8    | HW I2C SCL      | 同上                    |
+| 9    | I2S DOUT        | ES8311 语音输出 (TTS)    |
+| 10   | I2S WS          | ES8311 音频帧时钟        |
+| 11   | I2S DIN         | ES8311 麦克风输入        |
+| 12   | I2S BCK         | ES8311 音频位时钟        |
+| 13   | I2S MCK         | ES8311 主时钟            |
+| 14   | SDIO D0         | C6 WiFi 从机            |
+| 15   | SDIO D1         | C6 WiFi 从机            |
+| 16   | SDIO D2         | C6 WiFi 从机            |
+| 17   | SDIO D3         | C6 WiFi 从机            |
+| 18   | SDIO CLK        | C6 WiFi 从机            |
+| 19   | SDIO CMD        | C6 WiFi 从机            |
+| 20   | 舵机 1 PWM      | MCPWM 百叶窗            |
+| 21   | 舵机 2 PWM      | MCPWM 百叶窗            |
+| 22   | 舵机 3 PWM      | MCPWM 百叶窗            |
+| 23   | 舵机 4 PWM      | MCPWM 百叶窗            |
+| 26   | 屏幕背光 PWM    | LEDC Channel 0          |
 | 27   | LCD RST         | EK79007 复位            |
+| 32   | 舵机 5 PWM      | MCPWM 雨棚              |
+| 33   | 舵机 6 PWM      | MCPWM 雨棚              |
+| 48   | 风速传感器 DO   | 数字输入 (0=有风)        |
+| 53   | PA 功放控制     | ES8311 音频功放使能      |
+| 54   | C6 RST          | SDIO WiFi 从机复位       |
+
+===== I2C 总线设备 =====
+
+硬件 I2C (GPIO7=SDA, GPIO8=SCL):
+
+| 地址 | 设备            | 用途           |
+|------|-----------------|---------------|
+| 0x18 | ES8311          | 音频 Codec     |
+| 0x23 | BH1750          | 光照传感器      |
+| 0x2C/0x5D | GT911     | 触摸屏         |
+| 0x44 | SHT3x (室内)    | 温湿度传感器    |
+| 0x48 | ADS1115         | 外部ADC (烟雾+雨水) |
+|      |   AIN0          | → 雨水传感器    |
+|      |   AIN1          | → 烟雾传感器    |
+
+软件 I2C (GPIO5=SDA, GPIO6=SCL):
+
+| 地址 | 设备            | 用途           |
+|------|-----------------|---------------|
+| 0x44 | SHT3x (室外)    | 温湿度传感器    |
+
+===== ADC/传感器 =====
+
+| 传感器       | 接口       | 引脚/通道    | 备注                  |
+|-------------|-----------|-------------|----------------------|
+| 烟雾传感器   | 模拟 → ADS1115 AIN1 | -    | MQ-X 系列, 5V供电    |
+| 雨水传感器   | 模拟 → ADS1115 AIN0 | -    | 雨滴检测, 5V供电      |
+| 风速传感器   | 数字 DO    | GPIO48      | 0=有风, 1=无风        |
 
 ===== 显示/触摸 =====
 

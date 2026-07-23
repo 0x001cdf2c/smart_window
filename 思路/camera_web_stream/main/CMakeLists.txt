@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS
+        "capture_stream_main.c"
+        "wifi_http_server.c"
+    INCLUDE_DIRS
+        "."
+    PRIV_REQUIRES
+        esp_video
+        esp_cam_sensor
+        example_video_common
+        esp_http_server
+        esp_timer
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        esp_driver_jpeg
+)

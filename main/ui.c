@@ -31,6 +31,7 @@ static lv_obj_t *g_lbl_temp     = NULL;
 static lv_obj_t *g_lbl_humi     = NULL;
 static lv_obj_t *g_lbl_light    = NULL;
 static lv_obj_t *g_lbl_smoke    = NULL;
+static lv_obj_t *g_lbl_rain     = NULL;
 static lv_obj_t *g_lbl_airflow  = NULL;
 static lv_obj_t *g_lbl_temp_out = NULL;
 static lv_obj_t *g_lbl_humi_out = NULL;
@@ -242,26 +243,31 @@ static void sensors_create(lv_obj_t *screen)
     cjk_label_make(card, "外", C_MUTED);
     lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x1[3] + 25, 42);
 
-    /* Row 2: 烟, 风, 光 */
-    static const int x2[] = {6, 196, 386};
-    static const char *icons2[] = {"烟", "风", "光"};
+    /* Row 2: 烟, 雨, 风, 光 */
+    static const int x2[] = {6, 134, 262, 390};
+    static const char *icons2[] = {"烟", "雨", "风", "光"};
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         cjk_label_make(card, icons2[i], C_MUTED);
         lv_obj_set_pos(lv_obj_get_child(card, lv_obj_get_child_cnt(card) - 1), x2[i], 56);
     }
 
     g_lbl_smoke = label_make(card, "--", C_TEXT, 20);
     lv_obj_set_pos(g_lbl_smoke, x2[0] + 25, 60);
-    lv_obj_set_width(g_lbl_smoke, 140);
+    lv_obj_set_width(g_lbl_smoke, 95);
+
+    g_lbl_rain = label_make(card, "--", C_TEXT, 20);
+    lv_obj_set_pos(g_lbl_rain, x2[1] + 25, 60);
+    lv_obj_set_width(g_lbl_rain, 95);
 
     g_lbl_airflow = label_make(card, "--", C_MUTED, 20);
-    lv_obj_set_pos(g_lbl_airflow, x2[1] + 25, 60);
-    lv_obj_set_width(g_lbl_airflow, 140);
+    lv_obj_set_style_text_font(g_lbl_airflow, font_cjk(), 0);
+    lv_obj_set_pos(g_lbl_airflow, x2[2] + 25, 60);
+    lv_obj_set_width(g_lbl_airflow, 95);
 
     g_lbl_light = label_make(card, "--", C_TEXT, 20);
-    lv_obj_set_pos(g_lbl_light, x2[2] + 25, 60);
-    lv_obj_set_width(g_lbl_light, 140);
+    lv_obj_set_pos(g_lbl_light, x2[3] + 25, 60);
+    lv_obj_set_width(g_lbl_light, 95);
 }
 
 /* ── Weather card ── */
@@ -397,6 +403,7 @@ static lv_obj_t *g_lbl_timer_sched = NULL;
 static lv_obj_t *g_btn_mode_manual   = NULL;
 static lv_obj_t *g_btn_mode_env      = NULL;
 static lv_obj_t *g_btn_mode_adaptive = NULL;
+static lv_obj_t *g_btn_mode_natural  = NULL;
 
 static void timer_schedule_create(lv_obj_t *screen)
 {
@@ -436,8 +443,8 @@ static void mode_control_create(lv_obj_t *screen)
 
     /* Manual button */
     g_btn_mode_manual = lv_btn_create(card);
-    lv_obj_set_size(g_btn_mode_manual, 110, 40);
-    lv_obj_set_pos(g_btn_mode_manual, 80, 15);
+    lv_obj_set_size(g_btn_mode_manual, 100, 40);
+    lv_obj_set_pos(g_btn_mode_manual, 60, 15);
     lv_obj_set_style_radius(g_btn_mode_manual, 20, 0);
     lv_obj_set_style_bg_color(g_btn_mode_manual, C_ORANGE, 0);
     lv_obj_add_event_cb(g_btn_mode_manual, on_btn_event, LV_EVENT_CLICKED, (void *)"mode_manual");
@@ -446,8 +453,8 @@ static void mode_control_create(lv_obj_t *screen)
 
     /* Environment button */
     g_btn_mode_env = lv_btn_create(card);
-    lv_obj_set_size(g_btn_mode_env, 110, 40);
-    lv_obj_set_pos(g_btn_mode_env, 210, 15);
+    lv_obj_set_size(g_btn_mode_env, 100, 40);
+    lv_obj_set_pos(g_btn_mode_env, 175, 15);
     lv_obj_set_style_radius(g_btn_mode_env, 20, 0);
     lv_obj_set_style_bg_color(g_btn_mode_env, lv_color_hex(0xE8E8F0), 0);
     lv_obj_add_event_cb(g_btn_mode_env, on_btn_event, LV_EVENT_CLICKED, (void *)"mode_env");
@@ -456,12 +463,22 @@ static void mode_control_create(lv_obj_t *screen)
 
     /* Adaptive button */
     g_btn_mode_adaptive = lv_btn_create(card);
-    lv_obj_set_size(g_btn_mode_adaptive, 110, 40);
-    lv_obj_set_pos(g_btn_mode_adaptive, 340, 15);
+    lv_obj_set_size(g_btn_mode_adaptive, 100, 40);
+    lv_obj_set_pos(g_btn_mode_adaptive, 290, 15);
     lv_obj_set_style_radius(g_btn_mode_adaptive, 20, 0);
     lv_obj_set_style_bg_color(g_btn_mode_adaptive, lv_color_hex(0xE8E8F0), 0);
     lv_obj_add_event_cb(g_btn_mode_adaptive, on_btn_event, LV_EVENT_CLICKED, (void *)"mode_adaptive");
     bl = cjk_label_make(g_btn_mode_adaptive, "自适应", C_TEXT);
+    lv_obj_center(bl);
+
+    /* Natural wind button */
+    g_btn_mode_natural = lv_btn_create(card);
+    lv_obj_set_size(g_btn_mode_natural, 100, 40);
+    lv_obj_set_pos(g_btn_mode_natural, 405, 15);
+    lv_obj_set_style_radius(g_btn_mode_natural, 20, 0);
+    lv_obj_set_style_bg_color(g_btn_mode_natural, lv_color_hex(0xE8E8F0), 0);
+    lv_obj_add_event_cb(g_btn_mode_natural, on_btn_event, LV_EVENT_CLICKED, (void *)"mode_natural");
+    bl = cjk_label_make(g_btn_mode_natural, "自然风", C_TEXT);
     lv_obj_center(bl);
 }
 
@@ -522,6 +539,21 @@ void ui_update_smoke(int smoke)
         else if (smoke <= 60)  color = C_ORANGE;
         else                   color = C_RED;
         lv_obj_set_style_text_color(g_lbl_smoke, color, 0);
+    }
+}
+
+void ui_update_rain(int rain)
+{
+    if (g_lbl_rain) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%%", rain);
+        lv_label_set_text(g_lbl_rain, buf);
+
+        lv_color_t color;
+        if (rain <= 20)       color = C_MUTED;
+        else if (rain <= 50)  color = C_BLUE;
+        else                  color = lv_color_hex(0x0050AA);
+        lv_obj_set_style_text_color(g_lbl_rain, color, 0);
     }
 }
 
@@ -595,11 +627,12 @@ void ui_update_timer_schedule(const char *text)
 
 void ui_update_mode_highlight(const char *mode_name)
 {
-    if (!g_btn_mode_manual || !g_btn_mode_env || !g_btn_mode_adaptive) return;
+    if (!g_btn_mode_manual || !g_btn_mode_env || !g_btn_mode_adaptive || !g_btn_mode_natural) return;
 
     lv_color_t color_manual   = lv_color_hex(0xE8E8F0);
     lv_color_t color_env      = lv_color_hex(0xE8E8F0);
     lv_color_t color_adaptive = lv_color_hex(0xE8E8F0);
+    lv_color_t color_natural  = lv_color_hex(0xE8E8F0);
 
     if (strcmp(mode_name, "manual") == 0)
         color_manual = C_ORANGE;
@@ -607,8 +640,11 @@ void ui_update_mode_highlight(const char *mode_name)
         color_env = C_GREEN;
     else if (strcmp(mode_name, "adaptive") == 0)
         color_adaptive = C_ACCENT;
+    else if (strcmp(mode_name, "natural") == 0)
+        color_natural = C_BLUE;
 
     lv_obj_set_style_bg_color(g_btn_mode_manual,   color_manual,   0);
     lv_obj_set_style_bg_color(g_btn_mode_env,      color_env,      0);
     lv_obj_set_style_bg_color(g_btn_mode_adaptive, color_adaptive, 0);
+    lv_obj_set_style_bg_color(g_btn_mode_natural,  color_natural,  0);
 }
