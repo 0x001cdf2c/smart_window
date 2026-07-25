@@ -23,6 +23,11 @@ float servo_get_angle(void);
 void servo_set_mode(servo_mode_t mode);
 servo_mode_t servo_get_mode(void);
 
+/* 自然风模式: 仅舵机21/23 (idx=1,3) 转动, 20/22 保持0°放平 */
+esp_err_t servo_set_natural_wind_angle(float angle_deg);
+/* 自然风送风: 20/22向配对舵机方向聚拢, 取消则回到0°放平 */
+void servo_natural_wind_boost(bool enable);
+
 /* 雨棚控制 (舵机4&5): expand=true 展开, expand=false 收起 */
 void servo_rain_shelter_set(bool expand);
 bool servo_rain_shelter_is_expanded(void);

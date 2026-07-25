@@ -79,9 +79,9 @@ ALIBABA_AK_ID  = os.environ.get("ALIBABA_AK_ID", "LTAI5t7aY6b9GnD1EeHkap9c")
 ALIBABA_AK_SEC = os.environ.get("ALIBABA_AK_SEC", "VvmHTFHZRxoSeiXKSSRp6ucx602f3l")
 NUI_APPKEY     = os.environ.get("NUI_APPKEY", "F1cFX8KM7SWl1UBE")
 # kourichat (OpenAI-compatible)
-LLM_API_KEY  = os.environ.get("LLM_API_KEY", "sk-kouri-cYguYvHlSeFK9OWEboLmubqmukJvgT8RAaURNMxDDGo4viNa")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.kourichat.com/v1")
-LLM_MODEL    = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+LLM_API_KEY  = os.environ.get("LLM_API_KEY", DEEPSEEK_API_KEY)
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
+LLM_MODEL    = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
 # Per-device audio accumulation
 audio_buffers: dict[str, bytearray] = {}
@@ -304,7 +304,11 @@ def fetch_nlp(text: str, context: str) -> dict | None:
                 raw = raw[:-3]
             raw = raw.strip()
 
-        result = json.loads(raw)
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            log("NLP", f"非JSON回复: {raw}")
+            return None
         log("NLP", f"意图={result.get('action')} 回复={result.get('reply')}")
         return result
     except Exception as e:

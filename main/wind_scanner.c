@@ -8,7 +8,7 @@
 
 static const char *TAG = "WIND_SCAN";
 
-#define SCAN_SERVO_GPIO     GPIO_NUM_53
+#define SCAN_SERVO_GPIO     GPIO_NUM_4
 #define WIND_SENSOR_GPIO    GPIO_NUM_48
 #define SWEEP_DELAY_MS      15
 #define SERVO_PERIOD_US     20000
@@ -59,11 +59,15 @@ static void servo_start(int degree)
         rmt_disable(s_rmt_chan);
         rmt_enable(s_rmt_chan);
     }
-    rmt_transmit(s_rmt_chan, s_copy_encoder, &sym,
+    esp_err_t err = rmt_transmit(s_rmt_chan, s_copy_encoder, &sym,
                  sizeof(sym), &tx_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rmt_transmit failed: %s", esp_err_to_name(err));
+        return;
+    }
     s_rmt_active = true;
 
-    ESP_LOGI(TAG, "Servo → %d°  pulse=%lu us", degree, pulse_us);
+    ESP_LOGI(TAG, "Servo -> %d deg  pulse=%lu us", (int)degree, (unsigned long)pulse_us);
 }
 
 static void servo_stop(void)
@@ -136,7 +140,7 @@ static void scanner_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(200));
         servo_stop();
 
-        int best = 90;
+        int best = 150;
         int best_hits = 0;
         for (int i = 0; i <= 180; i++) {
             if (wind_hits[i] > best_hits) {

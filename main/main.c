@@ -49,6 +49,7 @@ static float s_last_light = 0.0f;
 static int   s_last_smoke = 0;
 static bool  s_last_airflow = false;
 static int   s_last_rain = 0;
+static bool  s_rain_manual = false;   /* true = user manually overrode rain shelter */
 
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
@@ -109,21 +110,25 @@ static void on_ui_action(const char *action)
         servo_set_mode(SERVO_MODE_AUTO);
         ui_update_mode(true);
     } else if (strcmp(action, "mode_manual") == 0) {
+        s_rain_manual = false;
         control_set_mode(CONTROL_MODE_MANUAL);
         display_lvgl_lock();
         ui_update_mode_highlight("manual");
         display_lvgl_unlock();
     } else if (strcmp(action, "mode_env") == 0) {
+        s_rain_manual = false;
         control_set_mode(CONTROL_MODE_ENV);
         display_lvgl_lock();
         ui_update_mode_highlight("env");
         display_lvgl_unlock();
     } else if (strcmp(action, "mode_adaptive") == 0) {
+        s_rain_manual = false;
         control_set_mode(CONTROL_MODE_ADAPTIVE);
         display_lvgl_lock();
         ui_update_mode_highlight("adaptive");
         display_lvgl_unlock();
     } else if (strcmp(action, "mode_natural") == 0) {
+        s_rain_manual = false;
         control_set_mode(CONTROL_MODE_NATURAL);
         wind_scanner_start();
         display_lvgl_lock();
@@ -137,8 +142,10 @@ static void on_ui_action(const char *action)
             ESP_LOGI(TAG, "Screen: deleted last one-shot timer (idx %d)", n - 1);
         }
     } else if (strcmp(action, "rain_expand") == 0) {
+        s_rain_manual = true;
         servo_rain_shelter_set(true);
     } else if (strcmp(action, "rain_collapse") == 0) {
+        s_rain_manual = true;
         servo_rain_shelter_set(false);
     }
 }
@@ -403,9 +410,11 @@ static void handle_web_command(const char *json_str)
         control_adaptive_record("close");
 
     } else if (strcmp(cmd, "rain_expand") == 0) {
+        s_rain_manual = true;
         servo_rain_shelter_set(true);
 
     } else if (strcmp(cmd, "rain_collapse") == 0) {
+        s_rain_manual = true;
         servo_rain_shelter_set(false);
 
     } else if (strcmp(cmd, "voice_cmd") == 0) {
@@ -474,7 +483,9 @@ static void handle_web_command(const char *json_str)
         cJSON *mode_item = cJSON_GetObjectItem(root, "mode");
         if (mode_item && mode_item->valuestring) {
             g_auto_running = false;
+            s_rain_manual = false;
             servo_set_mode(SERVO_MODE_MANUAL);
+            servo_natural_wind_boost(false);  /* 切换模式时取消送风 */
             if (strcmp(mode_item->valuestring, "env") == 0) {
                 control_set_mode(CONTROL_MODE_ENV);
             } else if (strcmp(mode_item->valuestring, "adaptive") == 0) {
@@ -508,6 +519,12 @@ static void handle_web_command(const char *json_str)
             control_timer_remove_one_shot(idx->valueint);
             ESP_LOGI(TAG, "Web: deleted timer idx %d", idx->valueint);
         }
+    } else if (strcmp(cmd, "natural_boost") == 0) {
+        servo_natural_wind_boost(true);
+        ESP_LOGI(TAG, "Web: natural boost ON");
+    } else if (strcmp(cmd, "natural_boost_off") == 0) {
+        servo_natural_wind_boost(false);
+        ESP_LOGI(TAG, "Web: natural boost OFF");
 
     } else if (strcmp(cmd, "env_suggestion") == 0) {
         /* Return current env evaluation */
@@ -675,6 +692,15 @@ static void sensor_task(void *arg)
             }
         }
 
+        /* ── 雨棚自动控制: rain > 50% 展开, 否则收起; 手动操作后自动失效 ── */
+        if (!s_rain_manual) {
+            if (s_last_rain > 50) {
+                servo_rain_shelter_set(true);
+            } else {
+                servo_rain_shelter_set(false);
+            }
+        }
+
         /* ── 自然风模式: 扫描风向, 每5分钟重新扫描 ── */
         if (control_get_mode() == CONTROL_MODE_NATURAL) {
             static time_t s_last_scan = 0;
@@ -683,7 +709,7 @@ static void sensor_task(void *arg)
             /* Apply new scan result if available */
             int best = 0;
             if (wind_scanner_try_apply(&best)) {
-                servo_set_angle((float)best);
+                servo_set_natural_wind_angle((float)best);
                 ESP_LOGI(TAG, "自然风: 最佳角度=%d°", best);
                 s_last_scan = now;
             }
@@ -1108,5 +1134,9 @@ void app_main(void)
 
     /* Wind scanner: init last to avoid I2C bus timing conflict */
     vTaskDelay(pdMS_TO_TICKS(500));
-    wind_scanner_init();
+    if (wind_scanner_init()) {
+        ESP_LOGI(TAG, "Wind scanner ready");
+    } else {
+        ESP_LOGE(TAG, "Wind scanner init failed");
+    }
 }

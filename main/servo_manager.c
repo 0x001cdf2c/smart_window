@@ -188,6 +188,46 @@ servo_mode_t servo_get_mode(void)
     return s_mode;
 }
 
+/* ── 自然风模式: 仅舵机21/23 (idx=1,3) 转动, 20/22 保持0°放平 ── */
+#define NATURAL_WIND_BOOST_FRAC  0.4f   /* 送风时20/22向配对舵机方向移动的比例 */
+
+static float s_natural_wind_angle = 150.0f;
+static bool  s_natural_boost = false;
+
+esp_err_t servo_set_natural_wind_angle(float angle_deg)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+
+    angle_deg = clamp_angle(angle_deg);
+    s_natural_wind_angle = angle_deg;
+
+    static const int active[] = {1, 3};
+    static const int flat[]   = {0, 2};
+
+    /* 20/22: boost 开启时向配对舵机方向聚拢, 否则放平 */
+    float boost_angle = s_natural_boost ? (angle_deg * NATURAL_WIND_BOOST_FRAC) : 0.0f;
+    for (int i = 0; i < 2; i++) {
+        float a = s_inverted[flat[i]] ? (180.0f - boost_angle) : boost_angle;
+        mcpwm_comparator_set_compare_value(s_cmprs[flat[i]], angle_to_pulse_us(a));
+    }
+    for (int i = 0; i < 2; i++) {
+        float a = s_inverted[active[i]] ? (180.0f - angle_deg) : angle_deg;
+        mcpwm_comparator_set_compare_value(s_cmprs[active[i]], angle_to_pulse_us(a));
+    }
+
+    ESP_LOGI(TAG, "Natural-wind -> %.1f deg (21/23), 20/22=%.1f %s",
+             angle_deg, boost_angle, s_natural_boost ? "boost" : "flat");
+    return ESP_OK;
+}
+
+void servo_natural_wind_boost(bool enable)
+{
+    if (s_natural_boost == enable) return;  /* 状态未变, 跳过 */
+    s_natural_boost = enable;
+    servo_set_natural_wind_angle(s_natural_wind_angle);
+    ESP_LOGI(TAG, "Natural-wind boost -> %s", enable ? "ON" : "OFF");
+}
+
 /* ── 雨棚独立控制 (舵机4&5) ── */
 #define RAIN_SHELTER_IDX0 4
 #define RAIN_SHELTER_IDX1 5
