@@ -153,50 +153,108 @@ void control_set_mode(control_mode_t mode)
 
 /* --- Env-aware --- */
 
-env_action_t control_env_evaluate(float temp, float humidity, float light)
+/*
+ * 环境感知模式 — 传感器驱动的开关窗决策
+ *
+ * 参数:
+ *   temp    室内温度 (°C)
+ *   humidity 室内湿度 (%)
+ *   light   室内光照 (lux)
+ *   smoke   烟雾浓度 (模拟量, ADC 原始值)
+ *   rain    雨水强度 (0-100%)
+ *
+ * 返回:
+ *   ENV_ACTION_CLOSE  — 关闭百叶窗
+ *   ENV_ACTION_OPEN   — 打开百叶窗 (具体角度由 control_env_target_angle 计算)
+ *   ENV_ACTION_NONE   — 维持当前角度不变
+ *
+ * 决策层次:
+ *   1. 安全优先 — 烟雾 / 雨水触发立即关闭, 跳过后续判断
+ *   2. 粗筛     — 极端条件快速触发 (高温 / 高湿 / 强光 / 极暗)
+ *   3. 投票     — 温和条件下综合多项传感器加权投票
+ */
+
+env_action_t control_env_evaluate(float temp, float humidity, float light,
+                                   float smoke, float rain)
 {
+    /*-----------------------------------------
+    此函数只关注窗户应该变大还是变小，返回两个值之一
+    ------------------------------------------*/
+
+    /* 第一层: 安全优先 — 烟雾或雨水超标立即关闭*/
+    if (smoke > 15.0f)  return ENV_ACTION_CLOSE;  /* 烟雾浓度超标, 关窗防护 */
+    if (rain > 50.0f)   return ENV_ACTION_CLOSE;  /* 雨水强度 > 50%, 关窗防水 */
+
+    /* 第二层: 粗筛 — 极端条件快速判断 任一条件独立触发, reasons 仅用于判断是否有极端情况*/
     int reasons = 0;
+    if (temp > 30.0f)      reasons++;  /* 高温 (> 30°C) → 倾向于开窗通风 */
+    if (humidity > 75.0f)  reasons++;  /* 高湿 (> 75%)  → 倾向于开窗除湿 */
+    if (light > 40000.0f)  reasons++;  /* 强光 (> 40k)  → 倾向于关窗遮光 */
+    if (light < 300.0f)    reasons++;  /* 极暗 (< 300)  → 倾向于开窗采光 */
+    if (reasons == 0) return ENV_ACTION_NONE;  /* 无极端条件, 跳过 */
 
-    if (temp > 30.0f)      reasons++;   /* too hot → open */
-    if (humidity > 75.0f)  reasons++;   /* humid → open */
-    if (light > 40000.0f)  reasons++;   /* too bright → close */
-    if (light < 300.0f)    reasons++;   /* too dark → open (let light in) */
-
-    if (reasons == 0) return ENV_ACTION_NONE;
-
-    /* Count open vs close reasons more carefully */
+    /* 第三层: 投票 — 温和条件下综合判断 使用较宽松的阈值, 多因素加权投票决定开/关 */
     int open_reasons = 0, close_reasons = 0;
-    if (temp > 28.0f)  open_reasons++;
-    if (humidity > 70.0f) open_reasons++;
-    if (light < 500.0f) open_reasons++;
-    if (light > 35000.0f) close_reasons++;
-    if (temp < 10.0f) close_reasons++;  /* too cold → close */
 
-    if (open_reasons > close_reasons) return ENV_ACTION_OPEN;
-    if (close_reasons > open_reasons) return ENV_ACTION_CLOSE;
-    return ENV_ACTION_NONE;
+    if (temp > 28.0f)       open_reasons++;   /* 偏热 → 开窗 */
+    if (humidity > 70.0f)   open_reasons++;   /* 偏湿 → 开窗 */
+    if (light < 500.0f)     open_reasons++;   /* 偏暗 → 开窗采光 */
+
+    if (light > 35000.0f)   close_reasons++;  /* 偏亮 → 关窗遮光 */
+    if (temp < 10.0f)       close_reasons++;  /* 偏冷 → 关窗保温 */
+
+    if (open_reasons > close_reasons)  return ENV_ACTION_OPEN;
+    if (close_reasons > open_reasons)  return ENV_ACTION_CLOSE;
+    return ENV_ACTION_NONE;  /* 平票, 维持现状 */
 }
 
+/*
+ * 环境模式 —— 计算目标舵机角度
+ *
+ * 根据当前温度、湿度、光照三个环境参数，综合计算一个目标角度。
+ * 角度约定：0° = 全开（叶片水平），90° = 全关（叶片垂直闭合）。
+ * 各因子的贡献是累加的，最终结果限制在 [0, 90] 范围内。
+ *
+ * 参数:
+ *   temp     - 当前温度 (°C)
+ *   humidity - 当前相对湿度 (%)
+ *   light    - 当前光照强度 (lux)
+ *
+ * 返回: 目标角度 (0–90)
+ */
 float control_env_target_angle(float temp, float humidity, float light)
 {
-    /* 0 = fully open, 90 = closed, 180 = fully reverse */
     float angle = 0.0f;
 
-    /* Temperature factor: 18-28°C is comfortable */
+    /*
+     * 温度因子：舒适区间 15°C – 28°C。
+     * 高于 28°C → 每升高 1°C 开窗 10°，线性增长，最大 90°（全开）。
+     * 低于 15°C → 每降低 1°C 开窗 6°，斜率较缓（冷天开窗需求不如热天紧迫）。
+     * 在 15–28°C 区间内，温度不贡献开窗角度。
+     */
     if (temp > 28.0f)
         angle = clamp_f((temp - 28.0f) * 10.0f, 0.0f, 90.0f);
     else if (temp < 15.0f)
         angle = clamp_f((15.0f - temp) * 6.0f, 0.0f, 90.0f);
 
-    /* Humidity factor: high humidity → open more */
+    /*
+     * 湿度因子：高湿叠加开窗。
+     * 相对湿度 > 70% → 每超出 1% 追加 2° 开窗角度。
+     * 在温度因子计算的角度之上累加，上限 90°。
+     */
     if (humidity > 70.0f)
         angle = clamp_f(angle + (humidity - 70.0f) * 2.0f, 0.0f, 90.0f);
 
-    /* Light factor: too bright → close some */
+    /*
+     * 光照因子：
+     * > 30,000 lux（强光/直射）→ 每超出 500 lux 追加 1° 关窗角度。
+     *   强光会导致眩光和升温，需要关窗遮挡。
+     * 500 – 5,000 lux（柔光）→ 直接减 10°（更开），适宜的自然光鼓励开窗。
+     */
     if (light > 30000.0f)
         angle = clamp_f(angle + (light - 30000.0f) / 500.0f, 0.0f, 90.0f);
     else if (light > 500.0f && light < 5000.0f)
-        angle = clamp_f(angle - 10.0f, 0.0f, 90.0f);  /* nice light, open more */
+        angle = clamp_f(angle - 10.0f, 0.0f, 90.0f);
 
     return angle;
 }
@@ -245,17 +303,35 @@ const recent_op_t *control_adaptive_get_recent_ops(int *out_count)
     return s_recent_ops;
 }
 
+/*
+ * 自适应模式 —— 预测用户作息计划
+ *
+ * 伪代码:
+ *   1. 从 NVS 加载历史操作记录
+ *   2. 如果记录数 < 5, 样本不足, 直接返回
+ *   3. 将 24 小时分成 24 个桶, 分别统计每小时的:
+ *      - open_buckets[h]:  该小时 "开窗" 次数
+ *      - close_buckets[h]: 该小时 "关窗" 次数
+ *      - count_buckets[h]: 该小时总操作次数
+ *   4. 从 open_buckets 中选出频次最高的 2 个小时 → 生成开窗计划
+ *   5. 从 close_buckets 中选出频次最高的 2 个小时 → 生成关窗计划
+ *   6. 每条计划的置信度 = 目标动作次数 / 该小时总操作次数 × 100%
+ *   7. 分钟固定为 :30（取整到半点）
+ *   8. 结果写入 s_schedule 并持久化到 NVS
+ */
 void control_adaptive_predict(void)
 {
+    /* 1. 加载历史记录, 清空旧计划 */
     pattern_store_t *store = nvs_load_patterns();
     memset(&s_schedule, 0, sizeof(s_schedule));
 
+    /* 2. 样本不足则跳过预测 */
     if (store->count < 5) {
         ESP_LOGI(TAG, "Not enough data for prediction (%d entries)", store->count);
         return;
     }
 
-    /* Count actions per hour bucket */
+    /* 3. 按小时桶统计开关窗频次 */
     int open_buckets[24] = {0};
     int close_buckets[24] = {0};
     int count_buckets[24] = {0};
@@ -267,9 +343,10 @@ void control_adaptive_predict(void)
         count_buckets[h]++;
     }
 
-    /* Pick top-2 open hours and top-2 close hours */
+    /* 4. 选出开窗频次最高的 2 个小时 */
     int plan_idx = 0;
     for (int pick = 0; pick < 2 && plan_idx < SCHEDULE_MAX_ENTRIES; pick++) {
+        /* 4a. 遍历 24 个桶, 找当前开窗次数最多的那个 */
         int best_h = -1, best_cnt = 0;
         for (int h = 0; h < 24; h++) {
             if (open_buckets[h] > best_cnt) {
@@ -277,9 +354,12 @@ void control_adaptive_predict(void)
                 best_h = h;
             }
         }
+        /* 4b. 命中则生成一条开窗计划项 */
         if (best_h >= 0 && best_cnt > 0 && count_buckets[best_h] > 0) {
+            /* 置信度 = 开窗次数 / 该小时总操作次数 */
             s_schedule.entries[plan_idx].confidence =
                 open_buckets[best_h] * 100 / count_buckets[best_h];
+            /* 时间取该小时的 :30 分 */
             int h = best_h % 24;
             s_schedule.entries[plan_idx].time_str[0] = (char)('0' + h / 10);
             s_schedule.entries[plan_idx].time_str[1] = (char)('0' + h % 10);
@@ -289,10 +369,13 @@ void control_adaptive_predict(void)
             s_schedule.entries[plan_idx].time_str[5] = '\0';
             snprintf(s_schedule.entries[plan_idx].action, 8, "open");
             plan_idx++;
-            open_buckets[best_h] = 0;  /* consumed */
+            open_buckets[best_h] = 0;  /* 已消费, 置零防止重复选中 */
         }
     }
+
+    /* 5. 选出关窗频次最高的 2 个小时（逻辑同上） */
     for (int pick = 0; pick < 2 && plan_idx < SCHEDULE_MAX_ENTRIES; pick++) {
+        /* 5a. 遍历 24 个桶, 找当前关窗次数最多的那个 */
         int best_h = -1, best_cnt = 0;
         for (int h = 0; h < 24; h++) {
             if (close_buckets[h] > best_cnt) {
@@ -300,6 +383,7 @@ void control_adaptive_predict(void)
                 best_h = h;
             }
         }
+        /* 5b. 命中则生成一条关窗计划项 */
         if (best_h >= 0 && best_cnt > 0 && count_buckets[best_h] > 0) {
             s_schedule.entries[plan_idx].confidence =
                 close_buckets[best_h] * 100 / count_buckets[best_h];
@@ -312,10 +396,11 @@ void control_adaptive_predict(void)
             s_schedule.entries[plan_idx].time_str[5] = '\0';
             snprintf(s_schedule.entries[plan_idx].action, 8, "close");
             plan_idx++;
-            close_buckets[best_h] = 0;
+            close_buckets[best_h] = 0;  /* 已消费 */
         }
     }
 
+    /* 6. 写入最终计划并持久化 */
     s_schedule.count = plan_idx;
     nvs_save_schedule();
     ESP_LOGI(TAG, "Prediction done: %d schedule entries", s_schedule.count);

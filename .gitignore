@@ -82,6 +82,7 @@ components_with_manifests_list.temp
 # User files
 思路/esp-dev-kits/
 build2/
+audio/
 serial_log.txt
 serial_log_err.txt
 flash_log.txt

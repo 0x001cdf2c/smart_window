@@ -530,7 +530,8 @@ static void handle_web_command(const char *json_str)
         /* Return current env evaluation */
         char buf[192];
         env_action_t act = control_env_evaluate(
-            s_last_temp, s_last_humi, s_last_light);
+            s_last_temp, s_last_humi, s_last_light,
+            (float)s_last_smoke, (float)s_last_rain);
         float target = control_env_target_angle(
             s_last_temp, s_last_humi, s_last_light);
         snprintf(buf, sizeof(buf),
@@ -662,7 +663,9 @@ static void sensor_task(void *arg)
 
         /* ── 环境感知模式: 传感器驱动窗户 ── */
         if (control_get_mode() == CONTROL_MODE_ENV) {
-            env_action_t act = control_env_evaluate(t_in, h_in, lux_f);
+            env_action_t act = control_env_evaluate(t_in, h_in, lux_f,
+                                                       (float)s_last_smoke,
+                                                       (float)s_last_rain);
             if (act == ENV_ACTION_OPEN) {
                 float tgt = control_env_target_angle(t_in, h_in, lux_f);
                 servo_set_angle(tgt);

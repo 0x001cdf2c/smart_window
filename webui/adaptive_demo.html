@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能窗帘 — 自适应算法演示</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+
+/* ═══ 粒子背景 ═══ */
+body {
+  background: #060c14; color: #c9d1d9; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  min-height: 100vh; display:flex; overflow:hidden; position:relative;
+}
+canvas#particles { position:fixed; top:0; left:0; width:100%; height:100%; z-index:0; pointer-events:none; }
+#app { position:relative; z-index:1; display:flex; width:100%; height:100vh; }
+
+/* ═══ Sidebar ═══ */
+.sidebar {
+  width: 380px; background: rgba(17,24,39,0.92); backdrop-filter:blur(12px);
+  padding: 20px; border-right: 1px solid rgba(31,41,55,0.6);
+  display: flex; flex-direction: column; gap: 14px; flex-shrink: 0; z-index:2;
+}
+h1 { font-size: 20px; color: #58a6ff; display: flex; align-items: center; gap: 10px; }
+h1 .glow { text-shadow: 0 0 20px rgba(88,166,255,0.5); }
+label { font-size: 13px; color: #8b949e; }
+.row { display:flex; gap:8px; align-items: flex-end; }
+input, select, button {
+  background: rgba(28,35,51,0.9); border: 1px solid #30363d; color: #c9d1d9;
+  padding: 8px 12px; border-radius: 6px; font-size: 14px; transition: .2s;
+}
+input:focus { outline:none; border-color:#58a6ff; box-shadow: 0 0 12px rgba(88,166,255,0.2); }
+button {
+  cursor:pointer; font-weight: 600; position:relative; overflow:hidden;
+}
+button::after {
+  content:''; position:absolute; top:0; left:-100%; width:100%; height:100%;
+  background:linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  transition: left .3s;
+}
+button:hover::after { left:100%; }
+.btn-primary { background: #238636; border-color: #2ea043; }
+.btn-primary:hover { background: #2ea043; box-shadow: 0 0 16px rgba(46,160,67,0.3); }
+.btn-run { font-size:16px; padding:14px; background:linear-gradient(135deg, #1a6dd4, #238636); border:none;
+  letter-spacing:2px; animation: btnGlow 2s infinite; }
+@keyframes btnGlow {
+  0%,100% { box-shadow: 0 0 8px rgba(88,166,255,0.3); }
+  50% { box-shadow: 0 0 24px rgba(88,166,255,0.6), 0 0 48px rgba(46,160,67,0.3); }
+}
+.btn-secondary { background: rgba(31,41,55,0.8); border: 1px solid #374151; }
+.btn-secondary:hover { background: rgba(55,65,81,0.8); }
+
+.entries-box {
+  flex:1; overflow-y:auto; background: rgba(13,17,23,0.8); border:1px solid rgba(31,41,55,0.4);
+  border-radius:8px; padding:10px; font-size:12px; font-family: 'Consolas', monospace;
+  min-height: 100px; max-height: 280px;
+}
+.entries-box::-webkit-scrollbar { width: 4px; }
+.entries-box::-webkit-scrollbar-thumb { background:#30363d; border-radius:2px; }
+.entry { padding: 3px 6px; border-bottom: 1px solid rgba(22,27,34,0.5); display:flex; justify-content:space-between; }
+.entry:last-child { border-bottom: none; }
+.entry .act { padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+.act.open { background: rgba(27,58,38,0.6); color: #3fb950; }
+.act.close { background: rgba(58,27,27,0.6); color: #f85149; }
+#entryCount { transition: transform .2s, color .3s; display:inline-block; }
+
+/* ═══ Main ═══ */
+.main {
+  flex: 1; padding: 24px 36px; overflow-y: auto; max-height: 100vh;
+  scroll-behavior:smooth;
+}
+.main::-webkit-scrollbar { width: 6px; }
+.main::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+
+/* ═══ Phase Progress Timeline ═══ */
+.progress-track {
+  display:flex; align-items:center; justify-content:center; gap:0;
+  padding: 20px 40px; margin-bottom: 24px;
+  opacity:0; transition: opacity .6s;
+}
+.progress-dot-wrap { display:flex; align-items:center; }
+.progress-dot {
+  width:36px; height:36px; border-radius:50%; background:rgba(28,35,51,0.8);
+  border:2px solid #30363d; display:flex; align-items:center; justify-content:center;
+  font-size:12px; font-weight:700; color:#484f58; transition: all .6s cubic-bezier(.34,1.56,.64,1);
+  position:relative; flex-shrink:0;
+}
+.progress-dot.active {
+  background:rgba(88,166,255,0.15); border-color:#58a6ff; color:#58a6ff;
+  box-shadow:0 0 20px rgba(88,166,255,0.4);
+}
+.progress-dot.done {
+  background:rgba(27,58,38,0.6); border-color:#3fb950; color:#3fb950;
+}
+.progress-dot.done::after { content:'✓'; }
+.progress-line {
+  width:60px; height:2px; background:#30363d; transition: background .8s;
+}
+.progress-line.done { background:linear-gradient(90deg, #3fb950, #58a6ff); }
+.progress-label {
+  font-size:10px; color:#484f58; text-align:center; margin-top:6px;
+  transition: color .6s; white-space:nowrap;
+}
+.progress-label.active { color:#58a6ff; }
+.progress-label.done { color:#3fb950; }
+
+/* ═══ Pulse ring on progress dots ═══ */
+.progress-dot.active::before {
+  content:''; position:absolute; inset:-4px; border-radius:50%;
+  border:2px solid rgba(88,166,255,0.4); animation: pulseRing 1.5s infinite;
+}
+@keyframes pulseRing {
+  0% { transform:scale(1); opacity:1; }
+  100% { transform:scale(1.6); opacity:0; }
+}
+
+/* ═══ Phase Blocks ═══ */
+.block {
+  background: rgba(17,24,39,0.85); border: 1px solid rgba(31,41,55,0.5);
+  border-radius: 12px; padding: 24px; margin-bottom: 20px;
+  backdrop-filter: blur(8px); position:relative; overflow:hidden;
+}
+.block::before {
+  content:''; position:absolute; top:0; left:0; width:100%; height:1px;
+  background:linear-gradient(90deg, transparent, rgba(88,166,255,0.3), transparent);
+}
+.block-title { font-size: 15px; color: #58a6ff; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(31,41,55,0.6); }
+.block-title .phase-num {
+  display:inline-block; background:rgba(88,166,255,0.15); color:#58a6ff;
+  padding:2px 10px; border-radius:20px; font-size:12px; margin-right:10px;
+}
+
+/* ═══ Radar Chart ═══ */
+.radar-wrap { display:flex; align-items:center; gap:24px; }
+.radar-wrap canvas { flex-shrink:0; }
+.radar-legend { font-size:11px; color:#8b949e; }
+.radar-legend .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+
+/* ═══ Histogram ═══ */
+.hist-row {
+  display:flex; align-items:center; gap:8px; margin: 4px 0; font-family:'Consolas',monospace; font-size:13px;
+  opacity: 0; transform: translateX(-20px); transition: .5s cubic-bezier(.34,1.56,.64,1);
+}
+.hist-row.visible { opacity:1; transform:translateX(0); }
+.hist-label { width:48px; color:#8b949e; text-align:right; flex-shrink:0; }
+.hist-bar {
+  display:flex; flex:1; height:26px; border-radius:4px; overflow:hidden;
+  background:rgba(28,35,51,0.6); position:relative;
+}
+.hist-bar .o { background: linear-gradient(180deg, #3fb950, #238636); transition: width 1.2s cubic-bezier(.22,.61,.36,1); }
+.hist-bar .c { background: linear-gradient(180deg, #f85149, #b62324); transition: width 1.2s cubic-bezier(.22,.61,.36,1); }
+.hist-bar .o.glow { box-shadow: 0 0 12px rgba(63,185,80,0.4); animation: barPulseO 2s infinite; }
+.hist-bar .c.glow { box-shadow: 0 0 12px rgba(248,81,73,0.4); animation: barPulseC 2s infinite; }
+@keyframes barPulseO {
+  0%,100% { box-shadow: 0 0 8px rgba(63,185,80,0.3); }
+  50% { box-shadow: 0 0 22px rgba(63,185,80,0.7), 0 0 36px rgba(63,185,80,0.2); }
+}
+@keyframes barPulseC {
+  0%,100% { box-shadow: 0 0 8px rgba(248,81,73,0.3); }
+  50% { box-shadow: 0 0 22px rgba(248,81,73,0.7), 0 0 36px rgba(248,81,73,0.2); }
+}
+.hist-stats { width: 150px; font-size:11px; color:#8b949e; text-align:left; flex-shrink:0; }
+.hist-row.peak { background: rgba(88,166,255,0.05); border-radius: 4px; }
+.hist-row.peak .hist-label { color:#58a6ff; font-weight:700; }
+
+/* ═══ Schedule Cards ═══ */
+.sched-row {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+  background: rgba(13,17,23,0.7); border:1px solid rgba(31,41,55,0.4);
+  border-radius: 10px; margin: 8px 0; font-size: 14px;
+  opacity:0; transform: translateY(20px) scale(0.95); transition: .6s cubic-bezier(.34,1.56,.64,1);
+}
+.sched-row.visible { opacity:1; transform:translateY(0) scale(1); }
+.sched-row:hover { border-color: rgba(88,166,255,0.3); background: rgba(17,24,39,0.9); }
+.sched-idx {
+  width:32px; height:32px; border-radius:50%; text-align:center; line-height:32px;
+  font-size:14px; font-weight:700; flex-shrink:0;
+}
+.sched-idx.open { background: rgba(27,58,38,0.8); color: #3fb950; box-shadow: 0 0 12px rgba(63,185,80,0.3); }
+.sched-idx.close { background: rgba(58,27,27,0.8); color: #f85149; box-shadow: 0 0 12px rgba(248,81,73,0.3); }
+.conf-bar { flex:1; height:10px; background:rgba(28,35,51,0.6); border-radius:5px; overflow:hidden; }
+.conf-bar-inner { height:100%; border-radius:5px; transition: width 1.5s cubic-bezier(.22,.61,.36,1); }
+.conf-bar-inner.open { background: linear-gradient(90deg, #238636, #3fb950, #56d364); }
+.conf-bar-inner.close { background: linear-gradient(90deg, #9c2929, #f85149, #ff6b6b); }
+
+/* ═══ Log lines ═══ */
+.log-line { font-family:'Consolas',monospace; font-size:12px; padding:2px 4px; color:#8b949e; opacity:0; transition: .4s; }
+.log-line.visible { opacity:1; }
+.log-line.highlight { color:#c9d1d9; background:rgba(88,166,255,0.06); padding:4px 8px; border-radius:4px;
+  border-left:2px solid #58a6ff; }
+
+/* ═══ Sensor Cards ═══ */
+.sensor-grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px; }
+.sensor-card {
+  background:rgba(13,17,23,0.7); border:1px solid rgba(31,41,55,0.4);
+  border-radius:10px; padding:16px; text-align:center; position:relative; overflow:hidden;
+}
+.sensor-card .icon { font-size:24px; margin-bottom:6px; }
+.sensor-card .val { font-size:26px; font-weight:700; font-family:'Consolas',monospace; }
+.sensor-card .label { font-size:11px; color:#8b949e; margin-top:4px; }
+.sensor-card .trend { font-size:11px; margin-top:2px; color:#484f58; transition: .3s; }
+.val.temp { color: #ffa657; }
+.val.humi { color: #79c0ff; }
+.val.light { color: #ffd966; }
+.val.smoke { color: #8b949e; }
+.val.rain { color: #79c0ff; }
+.val.wind { color: #56d364; }
+
+/* ═══ Matrix Rain Overlay ═══ */
+.matrix-overlay {
+  position:absolute; top:0; left:0; width:100%; height:100%;
+  pointer-events:none; z-index:5; opacity:0; transition: opacity .8s;
+  font-family:'Consolas',monospace; font-size:14px; color:#0f0; overflow:hidden;
+}
+.matrix-overlay.active { opacity:0.12; }
+
+/* ═══ Typing effect ═══ */
+.typewriter { overflow:hidden; border-right: 3px solid #58a6ff; white-space:nowrap;
+  animation: blink .75s step-end infinite; display:inline-block; }
+@keyframes blink { 50% { border-color: transparent; } }
+
+/* ═══ Scan line effect ═══ */
+.main::after {
+  content:''; position:fixed; top:0; right:0; width:calc(100% - 380px); height:100vh;
+  background:repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+  pointer-events:none; z-index:10; opacity:0.3;
+}
+
+/* ═══ Glitch ═══ */
+@keyframes glitch {
+  0%,90%,100% { transform:translate(0); }
+  92% { transform:translate(-2px, 1px); }
+  94% { transform:translate(2px, -1px); }
+  96% { transform:translate(-1px, 0); }
+}
+
+/* ═══ Hero ═══ */
+.hero { text-align:center; padding: 30px 20px; }
+.hero .logo { font-size:40px; margin-bottom:10px; animation: float 3s ease-in-out infinite; }
+@keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+.hero .sub { font-size:13px; color:#484f58; margin-top:8px; }
+
+/* ═══ Status dots ═══ */
+.dot-pulse { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+.dot-pulse.green { background:#3fb950; box-shadow:0 0 8px rgba(63,185,80,0.5); animation: dotPulse 1.5s infinite; }
+@keyframes dotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.5)} }
+
+/* ═══ Phase transition flash ═══ */
+.phase-flash {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  background:radial-gradient(circle, rgba(88,166,255,0.08), transparent 70%);
+  pointer-events:none; z-index:0; opacity:0; transition: opacity .15s;
+}
+.phase-flash.fire { opacity:1; transition: opacity 0s; }
+
+.rolling { display:inline-block; transition: color .3s; }
+
+#quickStats { display:flex; gap:12px; margin-top:8px; font-size:11px; color:#484f58; font-family:'Consolas',monospace; }
+#quickStats span { background:rgba(13,17,23,0.6); padding:4px 10px; border-radius:20px; border:1px solid rgba(31,41,55,0.3); }
+
+/* ═══ Spark burst ═══ */
+.spark {
+  position:fixed; pointer-events:none; z-index:20;
+  animation: sparkFly .8s ease-out forwards;
+  font-size:16px;
+}
+@keyframes sparkFly {
+  0% { opacity:1; transform:translate(0,0) scale(1); }
+  100% { opacity:0; transform:translate(var(--dx), var(--dy)) scale(0); }
+}
+
+/* ═══ Data flow lines ═══ */
+.data-line {
+  position:absolute; height:1px;
+  background:linear-gradient(90deg, transparent, rgba(88,166,255,0.5), transparent);
+  pointer-events:none; opacity:0;
+  animation: dataFlow 2s ease-in-out forwards;
+}
+@keyframes dataFlow {
+  0% { opacity:0; width:0; left:0; }
+  30% { opacity:1; }
+  70% { opacity:1; width:100%; }
+  100% { opacity:0; width:100%; left:0; }
+}
+</style>
+</head>
+<body>
+<canvas id="particles"></canvas>
+<div class="phase-flash" id="phaseFlash"></div>
+<div id="app">
+
+<div class="sidebar">
+  <h1><span class="dot-pulse green"></span><span class="glow">自适应算法</span> 模拟器</h1>
+
+  <label>添加操作记录</label>
+  <div class="row">
+    <input type="time" id="timeInput" value="08:00" style="width:110px">
+    <select id="actSelect"><option value="open">开窗</option><option value="close">关窗</option></select>
+    <button class="btn-primary" onclick="addEntry()">+</button>
+  </div>
+  <div class="row" style="gap:6px; flex-wrap:wrap">
+    <button class="btn-secondary" onclick="addRandom(1)">随机+1</button>
+    <button class="btn-secondary" onclick="addRandom(5)">随机+5</button>
+    <button class="btn-secondary" onclick="addRandom(10)">随机+10</button>
+    <button class="btn-secondary" onclick="loadDemo()">Demo 30条</button>
+  </div>
+
+  <div id="quickStats"><span>记录: <b id="entryCount">0</b></span><span>开: <b id="quickOpen">0</b></span><span>关: <b id="quickClose">0</b></span></div>
+
+  <label style="margin-top:4px">操作记录</label>
+  <div class="entries-box" id="entryList"><div style="color:#484f58;text-align:center;padding:20px">等待输入...</div></div>
+
+  <button class="btn-run" onclick="runSim()">▶ 运 行 预 测</button>
+  <button class="btn-secondary" onclick="location.reload()">↺ 重置</button>
+</div>
+
+<div class="main" id="mainContent">
+  <div class="hero" style="margin-top:140px">
+    <div class="logo">&#127811;</div>
+    <div style="font-size:18px;color:#8b949e">添加操作记录后</div>
+    <div style="font-size:15px;color:#484f58;margin-top:7px">点击 <span style="color:#58a6ff">运行预测</span> 开始演示</div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ═══ 粒子背景 (增强: 更大的粒子池 + 连线效果) ═══
+const canvas = document.getElementById('particles');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; });
+
+const particles = [];
+for (let i=0; i<100; i++) {
+  particles.push({
+    x: Math.random()*canvas.width, y: Math.random()*canvas.height,
+    vx: (Math.random()-.5)*0.5, vy: (Math.random()-.5)*0.5,
+    r: Math.random()*1.8+0.4, alpha: Math.random()*0.4+0.15
+  });
+}
+function animateParticles() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Draw particles
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    if (p.x<0 || p.x>canvas.width) p.vx *= -1;
+    if (p.y<0 || p.y>canvas.height) p.vy *= -1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(88,166,255,${p.alpha})`;
+    ctx.fill();
+  }
+  // Draw connections between close particles
+  for (let i=0; i<particles.length; i++) {
+    for (let j=i+1; j<particles.length; j++) {
+      const dx = particles[i].x - particles[j].x;
+      const dy = particles[i].y - particles[j].y;
+      const dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist < 80) {
+        ctx.beginPath();
+        ctx.moveTo(particles[i].x, particles[i].y);
+        ctx.lineTo(particles[j].x, particles[j].y);
+        ctx.strokeStyle = `rgba(88,166,255,${0.06*(1-dist/80)})`;
+        ctx.stroke();
+      }
+    }
+  }
+  requestAnimationFrame(animateParticles);
+}
+animateParticles();
+
+// ═══ Phase flash ═══
+function firePhaseFlash() {
+  const el = document.getElementById('phaseFlash');
+  el.classList.add('fire');
+  requestAnimationFrame(() => el.classList.remove('fire'));
+}
+
+// ═══ Spark burst at position ═══
+function sparkBurst(x, y, count=12) {
+  const symbols = ['✦','✧','◆','◇','·','•','▴','▪'];
+  for (let i=0; i<count; i++) {
+    const sp = document.createElement('div');
+    sp.className = 'spark';
+    sp.textContent = symbols[Math.floor(Math.random()*symbols.length)];
+    sp.style.left = x+'px'; sp.style.top = y+'px';
+    sp.style.color = i%3===0?'#58a6ff':(i%3===1?'#3fb950':'#ffd966');
+    const angle = Math.random()*Math.PI*2;
+    const dist = 30+Math.random()*60;
+    sp.style.setProperty('--dx', Math.cos(angle)*dist+'px');
+    sp.style.setProperty('--dy', Math.sin(angle)*dist+'px');
+    document.body.appendChild(sp);
+    setTimeout(() => sp.remove(), 800);
+  }
+}
+
+// ═══ Data ═══
+let patterns = [];
+const SCHEDULE_MAX = 4;
+
+function rand(lo,hi) { return lo+Math.random()*(hi-lo); }
+function clamp(v,lo,hi) { return Math.max(lo, Math.min(hi, v)); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function showEl(el) { el.classList.add('visible'); }
+
+// ═══ Sensor simulation ═══
+function simSensors(hour) {
+  const dayPhase = Math.sin((hour-6)*Math.PI/12);
+  const tOut = clamp(18+12*Math.max(0,dayPhase)+rand(-3,3), 5,40);
+  const tIn  = clamp(20+(tOut-15)*0.6+rand(-1.5,1.5), 10,35);
+  const hOut = clamp(50-(tOut-20)*2+rand(-10,10), 25,95);
+  const hIn  = clamp(hOut+rand(-8,8), 30,90);
+  let light;
+  if (hour>=6 && hour<=18) light = 50+950*Math.max(0,Math.sin((hour-6)*Math.PI/12))+rand(-80,80);
+  else light = rand(0,15);
+  light = clamp(light,0,1200);
+  const r = Math.random()*100;
+  const smoke = r<90 ? rand(0,5) : (r<98 ? rand(5,20) : rand(15,40));
+  const r2 = Math.random()*100;
+  const rain = r2<85 ? 0 : (r2<95 ? rand(1,40) : rand(50,100));
+  const airflow = Math.random()<0.7;
+  return {tIn:+tIn.toFixed(1), hIn:+hIn.toFixed(0), tOut:+tOut.toFixed(1),
+          hOut:+hOut.toFixed(0), light:+light.toFixed(0),
+          smoke:Math.floor(smoke), rain:Math.floor(rain), airflow};
+}
+
+// ═══ Record entries ═══
+function recordSilent(hh,mm,act) {
+  const s = simSensors(hh); s.hour=hh; s.min=mm; s.action=act;
+  patterns.push(s);
+}
+
+function record(hh,mm,act) {
+  recordSilent(hh,mm,act);
+  renderEntries();
+}
+
+function addEntry() {
+  const t = document.getElementById('timeInput').value;
+  const act = document.getElementById('actSelect').value;
+  if (!t) return;
+  const [hh, mm] = t.split(':').map(Number);
+  recordSilent(hh,mm,act);
+  appendEntry(patterns.length-1, false);
+  updateQuickStats();
+}
+
+function appendEntry(idx, showDay) {
+  const el = document.getElementById('entryList');
+  if (el.children.length === 1 && el.children[0].textContent === '等待输入...') el.innerHTML = '';
+  const p = patterns[idx];
+  const cls = p.action==='open'?'open':'close';
+  const actText = p.action==='open'?'开':'关';
+  const div = document.createElement('div');
+  div.className = 'entry';
+  div.style.animation = 'slideIn .35s ease-out';
+  const prefix = showDay ? `第${Math.floor(idx/4)+1}天 ` : '';
+  div.innerHTML = `<span>${prefix}${String(p.hour).padStart(2,'0')}:${String(p.min).padStart(2,'0')}</span>
+    <span style="font-size:10px;color:#484f58">T${p.tIn}° H${p.hIn}%</span>
+    <span class="act ${cls}">${actText}</span>`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 30) el.removeChild(el.children[0]);
+  updateQuickStats();
+}
+
+function updateQuickStats() {
+  const c = patterns.length;
+  const o = patterns.filter(p=>p.action==='open').length;
+  const cl = patterns.filter(p=>p.action==='close').length;
+  document.getElementById('entryCount').textContent = c;
+  document.getElementById('quickOpen').textContent = o;
+  document.getElementById('quickClose').textContent = cl;
+  document.getElementById('entryCount').style.transform = 'scale(1.4)';
+  document.getElementById('entryCount').style.color = '#3fb950';
+  setTimeout(() => {
+    document.getElementById('entryCount').style.transform = 'scale(1)';
+    document.getElementById('entryCount').style.color = '#c9d1d9';
+  }, 200);
+}
+
+function renderEntries() {
+  const el = document.getElementById('entryList');
+  updateQuickStats();
+  if (!patterns.length) { el.innerHTML = '<div style="color:#484f58;text-align:center;padding:20px">等待输入...</div>'; return; }
+  el.innerHTML = patterns.slice(-30).map(p => {
+    const cls = p.action==='open'?'open':'close';
+    return `<div class="entry"><span>${String(p.hour).padStart(2,'0')}:${String(p.min).padStart(2,'0')}</span>
+      <span style="font-size:10px;color:#484f58">T${p.tIn}° H${p.hIn}%</span>
+      <span class="act ${cls}">${p.action==='open'?'开':'关'}</span></div>`;
+  }).join('');
+}
+
+// ═══ Async loaders ═══
+async function addRandomAsync(n) {
+  const el = document.getElementById('entryList');
+  if (el.children.length === 1 && el.children[0].textContent === '等待输入...') el.innerHTML = '';
+
+  for (let i=0; i<n; i++) {
+    const hh = Math.floor(Math.random()*24);
+    const mm = Math.floor(Math.random()*60);
+    const r = Math.random();
+    let act;
+    if (hh>=6 && hh<=9)  act = r<0.75?'open':'close';
+    else if (hh>=15 && hh<=18) act = r<0.75?'close':'open';
+    else act = r<0.5?'open':'close';
+    recordSilent(hh,mm,act);
+    appendEntry(patterns.length-1, false);
+    await sleep(25);
+  }
+}
+
+function addRandom(n) { addRandomAsync(n); }
+function loadDemo() { loadDemoAsync(); }
+async function loadDemoAsync() {
+  const btn = document.querySelectorAll('.sidebar button')[4];
+  const orig = btn.textContent;
+  btn.textContent = '... 加载中';
+  btn.disabled = true;
+
+  const demo = [
+    [7,20,'open'],[7,35,'open'],[8,10,'open'],[8,25,'open'],
+    [15,30,'close'],[15,45,'close'],[16,0,'close'],[16,15,'close'],
+    [7,15,'open'],[7,30,'open'],[8,5,'open'],[8,20,'open'],
+    [15,25,'close'],[15,40,'close'],[16,10,'close'],[16,20,'close'],
+    [7,30,'open'],[8,40,'open'],[15,50,'close'],[16,0,'close'],
+    [7,25,'open'],[8,15,'open'],[15,20,'close'],[16,45,'close'],
+    [7,10,'open'],[8,5,'open'],[15,30,'close'],[16,15,'close'],
+    [8,30,'open'],[16,30,'close'],
+  ];
+
+  const el = document.getElementById('entryList');
+  if (!patterns.length) el.innerHTML = '';
+
+  for (let i=0; i<demo.length; i++) {
+    const [h,m,a] = demo[i];
+    recordSilent(h,m,a);
+    appendEntry(patterns.length-1, Math.random() > 0.5);
+    await sleep(40 + i*12);
+  }
+
+  btn.textContent = orig;
+  btn.disabled = false;
+}
+
+// ═══ Progress Timeline ═══
+function createProgressTrack() {
+  const track = document.createElement('div');
+  track.className = 'progress-track';
+  track.id = 'progressTrack';
+  const phases = ['传感器快照','频次直方图','贪婪搜索','计划表','决策输出'];
+  phases.forEach((name, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;';
+    const dotWrap = document.createElement('div');
+    dotWrap.className = 'progress-dot-wrap';
+
+    if (i > 0) {
+      const line = document.createElement('div');
+      line.className = 'progress-line';
+      line.id = `progLine${i}`;
+      dotWrap.appendChild(line);
+    }
+
+    const dot = document.createElement('div');
+    dot.className = 'progress-dot';
+    dot.id = `progDot${i}`;
+    dot.textContent = i+1;
+    dotWrap.appendChild(dot);
+
+    if (i < 4) {
+      const line2 = document.createElement('div');
+      line2.className = 'progress-line';
+      line2.id = `progLine${i+1}`;
+    }
+
+    wrap.appendChild(dotWrap);
+
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.id = `progLabel${i}`;
+    label.textContent = name;
+    label.style.marginTop = '6px';
+    wrap.appendChild(label);
+
+    track.appendChild(wrap);
+  });
+  // Fix: rebuild with proper line/dot interleaving
+  track.innerHTML = '';
+  phases.forEach((name, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;';
+    const dotWrap = document.createElement('div');
+    dotWrap.className = 'progress-dot-wrap';
+    dotWrap.style.display = 'flex';
+    dotWrap.style.alignItems = 'center';
+
+    if (i > 0) {
+      const line = document.createElement('div');
+      line.className = 'progress-line';
+      line.id = `progLine${i}`;
+      dotWrap.appendChild(line);
+    }
+
+    const dot = document.createElement('div');
+    dot.className = 'progress-dot';
+    dot.id = `progDot${i}`;
+    dot.textContent = i+1;
+    dotWrap.appendChild(dot);
+
+    wrap.appendChild(dotWrap);
+
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.id = `progLabel${i}`;
+    label.textContent = name;
+    label.style.marginTop = '6px';
+    wrap.appendChild(label);
+
+    track.appendChild(wrap);
+  });
+  return track;
+}
+
+async function updateProgress(phase) {
+  const dot = document.getElementById(`progDot${phase}`);
+  const label = document.getElementById(`progLabel${phase}`);
+  if (dot) { dot.classList.add('active'); }
+  if (label) { label.classList.add('active'); }
+
+  // Mark previous as done
+  if (phase > 0) {
+    const prevDot = document.getElementById(`progDot${phase-1}`);
+    const prevLabel = document.getElementById(`progLabel${phase-1}`);
+    const prevLine = document.getElementById(`progLine${phase}`);
+    if (prevDot) { prevDot.classList.remove('active'); prevDot.classList.add('done'); }
+    if (prevLabel) { prevLabel.classList.remove('active'); prevLabel.classList.add('done'); }
+    if (prevLine) { prevLine.classList.add('done'); }
+  }
+
+  // Spark at dot position
+  await sleep(100);
+  if (dot) {
+    const rect = dot.getBoundingClientRect();
+    sparkBurst(rect.left+rect.width/2, rect.top+rect.height/2, 8);
+  }
+}
+
+// ═══ Radar Chart ═══
+function drawRadarChart(canvas, data) {
+  const cx = canvas.width/2, cy = canvas.height/2;
+  const maxR = Math.min(cx,cy) - 20;
+  const axes = ['温度','湿度','光照','烟雾','雨水','气流'];
+  const n = axes.length;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Grid circles
+  for (let r=1; r<=4; r++) {
+    ctx.beginPath();
+    for (let i=0; i<n; i++) {
+      const angle = -Math.PI/2 + i*2*Math.PI/n;
+      const x = cx + maxR*(r/4)*Math.cos(angle);
+      const y = cy + maxR*(r/4)*Math.sin(angle);
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(48,54,61,0.5)';
+    ctx.stroke();
+  }
+
+  // Axis lines
+  for (let i=0; i<n; i++) {
+    const angle = -Math.PI/2 + i*2*Math.PI/n;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx+maxR*Math.cos(angle), cy+maxR*Math.sin(angle));
+    ctx.strokeStyle = 'rgba(48,54,61,0.3)';
+    ctx.stroke();
+
+    // Labels
+    const lx = cx + (maxR+18)*Math.cos(angle);
+    const ly = cy + (maxR+18)*Math.sin(angle);
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '11px "Microsoft YaHei","Segoe UI",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(axes[i], lx, ly);
+  }
+
+  // Data polygon
+  ctx.beginPath();
+  for (let i=0; i<n; i++) {
+    const angle = -Math.PI/2 + i*2*Math.PI/n;
+    const v = data[i];
+    const x = cx + maxR*v*Math.cos(angle);
+    const y = cy + maxR*v*Math.sin(angle);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(88,166,255,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(88,166,255,0.7)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Data points
+  for (let i=0; i<n; i++) {
+    const angle = -Math.PI/2 + i*2*Math.PI/n;
+    const v = data[i];
+    const x = cx + maxR*v*Math.cos(angle);
+    const y = cy + maxR*v*Math.sin(angle);
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI*2);
+    ctx.fillStyle = '#58a6ff';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+// ═══ Matrix Rain ═══
+function createMatrixOverlay(container) {
+  const overlay = document.createElement('div');
+  overlay.className = 'matrix-overlay';
+  overlay.id = 'matrixOverlay';
+  container.style.position = 'relative';
+  container.appendChild(overlay);
+  return overlay;
+}
+function startMatrixRain(overlay) {
+  overlay.classList.add('active');
+  overlay.innerHTML = '';
+  const cols = Math.floor(overlay.offsetWidth/14);
+  for (let i=0; i<cols; i++) {
+    const col = document.createElement('div');
+    col.style.cssText = `position:absolute;top:${-Math.random()*200}px;left:${i*14}px;animation:matrixDrop ${1+Math.random()*2}s linear infinite;animation-delay:${Math.random()*2}s`;
+    col.textContent = String.fromCharCode(0x30A0+Math.random()*96);
+    overlay.appendChild(col);
+  }
+}
+function stopMatrixRain(overlay) {
+  overlay.classList.remove('active');
+  setTimeout(() => { overlay.innerHTML = ''; }, 800);
+}
+
+// ═══ Add matrix drop keyframe dynamically ═══
+const matrixStyle = document.createElement('style');
+matrixStyle.textContent = `@keyframes matrixDrop { 0%{transform:translateY(-100%);opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{transform:translateY(${window.innerHeight}px);opacity:0} } @keyframes slideIn { from{opacity:0;transform:translateX(-20px)} to{opacity:1;transform:translateX(0)} }`;
+document.head.appendChild(matrixStyle);
+
+// ═══ Main simulation ═══
+async function typeText(el, text, speed=25) {
+  el.textContent = '';
+  for (let i=0; i<text.length; i++) {
+    el.textContent += text[i];
+    await sleep(speed * (text[i]==='\n'?3:1));
+  }
+  el.style.borderRight = 'none';
+}
+
+function addBlock(parent, title, phaseNum) {
+  const div = document.createElement('div');
+  div.className = 'block';
+  const num = phaseNum ? `<span class="phase-num">Phase ${phaseNum}</span>` : '';
+  div.innerHTML = `<div class="block-title">${num}${title}</div>`;
+  parent.appendChild(div);
+  return div;
+}
+
+function addLog(parent) {
+  const div = document.createElement('div');
+  parent.appendChild(div);
+  return div;
+}
+
+async function addLogLine(container, text, cls='') {
+  const div = document.createElement('div');
+  div.className = 'log-line' + (cls?' '+cls:'');
+  div.textContent = text;
+  container.appendChild(div);
+  await sleep(60);
+  showEl(div);
+}
+
+// ═══ Rolling number animation ═══
+async function rollNumber(el, from, to, duration=800) {
+  const start = performance.now();
+  return new Promise(resolve => {
+    function frame(ts) {
+      const p = Math.min((ts-start)/duration, 1);
+      const eased = 1 - Math.pow(1-p, 3);
+      const val = Math.round(from + (to-from)*eased);
+      el.textContent = val;
+      if (p < 1) requestAnimationFrame(frame);
+      else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// ═══ RUN ═══
+async function runSim() {
+  if (patterns.length < 5) { alert('至少需要 5 条操作记录'); return; }
+
+  const main = document.getElementById('mainContent');
+  main.innerHTML = '';
+
+  // Progress track
+  const track = createProgressTrack();
+  main.appendChild(track);
+  await sleep(200);
+  track.style.opacity = '1';
+
+  // ── Hero ──
+  const hero = document.createElement('div');
+  hero.className = 'hero';
+  hero.innerHTML = `<div class="logo">&#9881;</div>
+    <div class="typewriter" id="phaseTitle" style="font-size:22px;color:#58a6ff">▌</div>
+    <div class="sub" id="heroSub"></div>`;
+  main.appendChild(hero);
+  await sleep(400);
+  await typeText(document.getElementById('phaseTitle'), '自适应算法 · 运行中...');
+  await sleep(200);
+  const subEl = document.getElementById('heroSub');
+  subEl.style.color = '#8b949e';
+  subEl.textContent = `数据集: ${patterns.length} 条操作记录 | ${Math.floor(patterns.length/4)} 天跨度`;
+
+  await sleep(600);
+
+  // ═══ Phase 1: Sensor snapshot ═══
+  await updateProgress(0);
+  firePhaseFlash();
+
+  const p1 = addBlock(main, '环境传感器实时快照', 1);
+
+  const last5 = patterns.slice(-5);
+  const avgT = last5.reduce((s,p)=>s+p.tIn,0)/last5.length;
+  const avgH = last5.reduce((s,p)=>s+p.hIn,0)/last5.length;
+  const avgL = last5.reduce((s,p)=>s+p.light,0)/last5.length;
+  const last = last5[last5.length-1];
+
+  // Radar + sensor cards side by side
+  const flexRow = document.createElement('div');
+  flexRow.style.cssText = 'display:flex;align-items:center;gap:30px;flex-wrap:wrap';
+  p1.appendChild(flexRow);
+
+  // Radar chart
+  const radarCanvas = document.createElement('canvas');
+  radarCanvas.width = 220; radarCanvas.height = 220;
+  radarCanvas.style.opacity = '0';
+  radarCanvas.style.transition = 'opacity .8s';
+  flexRow.appendChild(radarCanvas);
+
+  // Normalize sensor data to 0-1 for radar
+  const radarData = [
+    clamp(avgT/40, 0, 1),
+    clamp(avgH/100, 0, 1),
+    clamp(avgL/1200, 0, 1),
+    clamp(last.smoke/30, 0, 1),
+    clamp(last.rain/100, 0, 1),
+    last.airflow?0.8:0.1,
+  ];
+
+  // Animate radar drawing
+  await sleep(200);
+  radarCanvas.style.opacity = '1';
+
+  // Progressive radar draw
+  const radarCtx = radarCanvas.getContext('2d');
+  const cx=110, cy=110, maxR=90;
+  const n=6;
+  // Draw grid immediately
+  for (let r=1; r<=4; r++) {
+    radarCtx.beginPath();
+    for (let i=0; i<n; i++) {
+      const angle = -Math.PI/2 + i*2*Math.PI/n;
+      const x = cx + maxR*(r/4)*Math.cos(angle);
+      const y = cy + maxR*(r/4)*Math.sin(angle);
+      i===0?radarCtx.moveTo(x,y):radarCtx.lineTo(x,y);
+    }
+    radarCtx.closePath();
+    radarCtx.strokeStyle = 'rgba(48,54,61,0.4)';
+    radarCtx.stroke();
+  }
+  for (let i=0; i<n; i++) {
+    const angle = -Math.PI/2 + i*2*Math.PI/n;
+    radarCtx.beginPath(); radarCtx.moveTo(cx,cy);
+    radarCtx.lineTo(cx+maxR*Math.cos(angle), cy+maxR*Math.sin(angle));
+    radarCtx.strokeStyle = 'rgba(48,54,61,0.2)'; radarCtx.stroke();
+    const lx = cx+(maxR+18)*Math.cos(angle), ly = cy+(maxR+18)*Math.sin(angle);
+    radarCtx.fillStyle = '#8b949e'; radarCtx.font='10px "Microsoft YaHei",sans-serif';
+    radarCtx.textAlign='center'; radarCtx.textBaseline='middle';
+    radarCtx.fillText(['温度','湿度','光照','烟雾','雨水','气流'][i], lx, ly);
+  }
+  // Animate data fill
+  for (let step=0; step<=20; step++) {
+    const frac = step/20;
+    radarCtx.clearRect(0,0,220,220);
+    // Redraw grid (inefficient but simple)
+    for (let r=1; r<=4; r++) {
+      radarCtx.beginPath();
+      for (let i=0; i<n; i++) {
+        const angle = -Math.PI/2 + i*2*Math.PI/n;
+        const x = cx + maxR*(r/4)*Math.cos(angle);
+        const y = cy + maxR*(r/4)*Math.sin(angle);
+        i===0?radarCtx.moveTo(x,y):radarCtx.lineTo(x,y);
+      }
+      radarCtx.closePath();
+      radarCtx.strokeStyle = 'rgba(48,54,61,0.4)'; radarCtx.stroke();
+    }
+    for (let i=0; i<n; i++) {
+      const angle = -Math.PI/2 + i*2*Math.PI/n;
+      radarCtx.beginPath(); radarCtx.moveTo(cx,cy);
+      radarCtx.lineTo(cx+maxR*Math.cos(angle), cy+maxR*Math.sin(angle));
+      radarCtx.strokeStyle = 'rgba(48,54,61,0.2)'; radarCtx.stroke();
+      const lx = cx+(maxR+18)*Math.cos(angle), ly = cy+(maxR+18)*Math.sin(angle);
+      radarCtx.fillStyle = '#8b949e'; radarCtx.font='10px "Microsoft YaHei",sans-serif';
+      radarCtx.textAlign='center'; radarCtx.textBaseline='middle';
+      radarCtx.fillText(['温度','湿度','光照','烟雾','雨水','气流'][i], lx, ly);
+    }
+    // Data polygon
+    radarCtx.beginPath();
+    for (let i=0; i<n; i++) {
+      const angle = -Math.PI/2 + i*2*Math.PI/n;
+      const x = cx + maxR*radarData[i]*frac*Math.cos(angle);
+      const y = cy + maxR*radarData[i]*frac*Math.sin(angle);
+      i===0?radarCtx.moveTo(x,y):radarCtx.lineTo(x,y);
+    }
+    radarCtx.closePath();
+    radarCtx.fillStyle = 'rgba(88,166,255,0.1)'; radarCtx.fill();
+    radarCtx.strokeStyle = 'rgba(88,166,255,0.6)'; radarCtx.lineWidth=2; radarCtx.stroke();
+    await sleep(30);
+  }
+
+  // Sensor cards
+  const grid = document.createElement('div');
+  grid.className = 'sensor-grid';
+  grid.style.flex = '1';
+  grid.style.minWidth = '280px';
+  grid.style.opacity = '0';
+  grid.style.transition = 'opacity .6s';
+  flexRow.appendChild(grid);
+
+  const sensorCards = [
+    {icon:'🌡️', cls:'temp', label:'室内温度', val:0, unit:'°C', target:avgT},
+    {icon:'💧', cls:'humi', label:'室内湿度', val:0, unit:'%', target:avgH},
+    {icon:'☀️', cls:'light', label:'光照强度', val:0, unit:' lux', target:avgL},
+    {icon:'🔥', cls:'smoke', label:'烟雾浓度', val:0, unit:'%', target:last.smoke},
+    {icon:'🌧️', cls:'rain', label:'雨量检测', val:0, unit:'%', target:last.rain},
+    {icon:'💨', cls:'wind', label:'气流状态', val:0, unit:'', target:last.airflow?'有风':'无风'},
+  ];
+
+  for (const sc of sensorCards) {
+    const card = document.createElement('div');
+    card.className = 'sensor-card';
+    card.innerHTML = `<div class="icon">${sc.icon}</div>
+      <div class="val ${sc.cls} rolling">0</div>
+      <div class="label">${sc.label}${sc.unit}</div>`;
+    grid.appendChild(card);
+  }
+  grid.style.opacity = '1';
+  await sleep(300);
+
+  const vals = grid.querySelectorAll('.rolling');
+  for (let i=0; i<vals.length; i++) {
+    const sc = sensorCards[i];
+    if (i < 3) {
+      await rollNumber(vals[i], 0, Math.round(sc.target), 900);
+    } else if (i === 5) {
+      vals[i].textContent = sc.target;
+      vals[i].style.color = sc.target==='有风'?'#56d364':'#8b949e';
+    } else {
+      vals[i].textContent = sc.target;
+    }
+    await sleep(150);
+  }
+
+  // ═══ Phase 2: Histogram ═══
+  await sleep(500);
+  await updateProgress(1);
+  firePhaseFlash();
+
+  const p2 = addBlock(main, '24 小时操作频次直方图', 2);
+  const p2log = addLog(p2);
+  await addLogLine(p2log, '▸ 按小时桶分组统计...');
+  await sleep(200);
+
+  const openBk = new Array(24).fill(0);
+  const closeBk = new Array(24).fill(0);
+  const countBk = new Array(24).fill(0);
+  patterns.forEach(p => {
+    const h = p.hour;
+    if (p.action==='open') openBk[h]++; else closeBk[h]++;
+    countBk[h]++;
+  });
+  const maxCnt = Math.max(...countBk, 1);
+
+  await addLogLine(p2log, '▸ 渲染直方图...', 'highlight');
+  await sleep(100);
+
+  const histContainer = document.createElement('div');
+  histContainer.style.marginTop = '12px';
+  p2.appendChild(histContainer);
+
+  const peakOpen = openBk.indexOf(Math.max(...openBk));
+  const peakClose = closeBk.indexOf(Math.max(...closeBk));
+
+  for (let h=0; h<24; h++) {
+    const row = document.createElement('div');
+    row.className = 'hist-row';
+    if (h===peakOpen || h===peakClose) row.classList.add('peak');
+    const t = countBk[h], o = openBk[h], c = closeBk[h];
+    row.innerHTML = `<span class="hist-label">${String(h).padStart(2,'0')}:00</span>
+      <div class="hist-bar">
+        <div class="o${h===peakOpen?' glow':''}" style="width:0%"></div>
+        <div class="c${h===peakClose?' glow':''}" style="width:0%"></div>
+      </div>
+      <span class="hist-stats">开${o} / 关${c} / 共${t}</span>`;
+    histContainer.appendChild(row);
+
+    await sleep(35);
+    showEl(row);
+    await sleep(60);
+    row.querySelector('.o').style.width = (o/maxCnt*100)+'%';
+    row.querySelector('.c').style.width = (c/maxCnt*100)+'%';
+
+    // Spark on peak rows
+    if (h===peakOpen || h===peakClose) {
+      const rect = row.getBoundingClientRect();
+      sparkBurst(rect.left+60, rect.top+rect.height/2, 5);
+    }
+
+    if (h%6===5) await sleep(150);
+  }
+
+  const legend = document.createElement('div');
+  legend.style.cssText = 'display:flex;gap:20px;font-size:11px;margin-top:14px;color:#8b949e';
+  legend.innerHTML = '<span><span style="display:inline-block;width:14px;height:14px;background:linear-gradient(180deg,#3fb950,#238636);border-radius:2px;vertical-align:middle;margin-right:6px"></span>开窗</span><span><span style="display:inline-block;width:14px;height:14px;background:linear-gradient(180deg,#f85149,#b62324);border-radius:2px;vertical-align:middle;margin-right:6px"></span>关窗</span><span>✨ 脉冲高亮 = 峰值时段</span>';
+  p2.appendChild(legend);
+
+  // ═══ Phase 3: Greedy search ═══
+  await sleep(600);
+  await updateProgress(2);
+  firePhaseFlash();
+
+  const p3 = addBlock(main, '贪婪搜索 Top-2 高峰时段', 3);
+
+  // Matrix rain overlay
+  const matrixOverlay = createMatrixOverlay(p3);
+  startMatrixRain(matrixOverlay);
+
+  const p3log = addLog(p3);
+
+  const openBk2 = [...openBk], closeBk2 = [...closeBk];
+  const schedule = [];
+
+  await addLogLine(p3log, '▸ 搜索开窗高峰...', 'highlight');
+  for (let pick=0; pick<2; pick++) {
+    let bestH=-1, bestV=-1;
+    for (let h=0; h<24; h++) { if (openBk2[h]>bestV) { bestV=openBk2[h]; bestH=h; } }
+    if (bestH>=0 && bestV>0 && countBk[bestH]>0) {
+      const conf = Math.round(openBk2[bestH]*100/countBk[bestH]);
+      schedule.push({time:`${String(bestH).padStart(2,'0')}:30`, action:'open', confidence:conf});
+      for (let s=0; s<24; s++) {
+        const stars = s===bestH?' ★ 命中!':'';
+        await addLogLine(p3log, `  扫描 ${String(s).padStart(2,'0')}:00 ... 开窗${openBk2[s]}次${stars}`);
+        await sleep(12);
+        if (s===bestH) {
+          await addLogLine(p3log, `    → Top-${pick+1} 开窗: ${String(bestH).padStart(2,'0')}:00 (${bestV}次) 置信度 ${conf}%`, 'highlight');
+          // Spark at hit
+          const rect = p3log.lastElementChild.getBoundingClientRect();
+          sparkBurst(rect.left+100, rect.top+8, 10);
+          await sleep(300);
+        }
+      }
+      openBk2[bestH] = 0;
+    }
+  }
+
+  await addLogLine(p3log, '');
+  await addLogLine(p3log, '▸ 搜索关窗高峰...', 'highlight');
+  for (let pick=0; pick<2; pick++) {
+    let bestH=-1, bestV=-1;
+    for (let h=0; h<24; h++) { if (closeBk2[h]>bestV) { bestV=closeBk2[h]; bestH=h; } }
+    if (bestH>=0 && bestV>0 && countBk[bestH]>0) {
+      const conf = Math.round(closeBk2[bestH]*100/countBk[bestH]);
+      schedule.push({time:`${String(bestH).padStart(2,'0')}:30`, action:'close', confidence:conf});
+      for (let s=0; s<24; s++) {
+        const stars = s===bestH?' ★ 命中!':'';
+        await addLogLine(p3log, `  扫描 ${String(s).padStart(2,'0')}:00 ... 关窗${closeBk2[s]}次${stars}`);
+        await sleep(12);
+        if (s===bestH) {
+          await addLogLine(p3log, `    → Top-${pick+1} 关窗: ${String(bestH).padStart(2,'0')}:00 (${bestV}次) 置信度 ${conf}%`, 'highlight');
+          const rect = p3log.lastElementChild.getBoundingClientRect();
+          sparkBurst(rect.left+100, rect.top+8, 10);
+          await sleep(300);
+        }
+      }
+      closeBk2[bestH] = 0;
+    }
+  }
+
+  stopMatrixRain(matrixOverlay);
+
+  // ═══ Phase 4: Schedule table ═══
+  await sleep(500);
+  await updateProgress(3);
+  firePhaseFlash();
+
+  const p4 = addBlock(main, '预测计划表', 4);
+  const schedContainer = document.createElement('div');
+  p4.appendChild(schedContainer);
+
+  if (!schedule.length) {
+    schedContainer.innerHTML = '<div style="color:#f85149;text-align:center;padding:30px;font-size:16px">样本不足，无法预测</div>';
+  } else {
+    for (let i=0; i<schedule.length; i++) {
+      const s = schedule[i];
+      const row = document.createElement('div');
+      row.className = 'sched-row';
+      row.innerHTML = `<span class="sched-idx ${s.action}">${i+1}</span>
+        <span style="width:55px;font-family:Consolas,monospace;font-size:16px">${s.time}</span>
+        <span style="width:45px;color:${s.action==='open'?'#3fb950':'#f85149'};font-weight:600">${s.action==='open'?'开窗':'关窗'}</span>
+        <div class="conf-bar"><div class="conf-bar-inner ${s.action}" style="width:0%"></div></div>
+        <span style="width:45px;font-family:Consolas,monospace">${s.confidence}%</span>`;
+      schedContainer.appendChild(row);
+      await sleep(400);
+      showEl(row);
+      await sleep(120);
+      row.querySelector('.conf-bar-inner').style.width = s.confidence+'%';
+
+      // Spark on each card
+      const rect = row.getBoundingClientRect();
+      sparkBurst(rect.right-60, rect.top+rect.height/2, 6);
+    }
+  }
+
+  // ═══ Phase 5: Execution ═══
+  await sleep(500);
+  await updateProgress(4);
+  firePhaseFlash();
+
+  const p5 = addBlock(main, '决策输出 & 持久化', 5);
+  const p5log = addLog(p5);
+
+  const now = new Date();
+  const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  await addLogLine(p5log, `▸ 当前时间: ${nowStr}`, 'highlight');
+  await sleep(300);
+
+  let matched = false;
+  for (const s of schedule) {
+    if (s.time === nowStr) {
+      await addLogLine(p5log, `▸ ⚡ 计划命中! 执行: ${s.action==='open'?'打开窗帘 → 舵机 0°':'关闭窗帘 → 舵机 90°'}`, 'highlight');
+      await sleep(200);
+      await addLogLine(p5log, `▸ 🎤 TTS播报: "${s.action==='open'?'开窗啦~ 透透气':'关窗~ 遮光模式'}"`);
+      matched = true;
+    }
+  }
+  if (!matched) { await addLogLine(p5log, '▸ 当前无匹配计划, 等待下一个整半点...'); }
+
+  await sleep(400);
+  await addLogLine(p5log, '');
+  await addLogLine(p5log, '▸ 写入 NVS Flash...');
+  await sleep(300);
+  await addLogLine(p5log, '▸ ✅ 预测计划已持久化 (重启不丢失)');
+  await sleep(200);
+  await addLogLine(p5log, '▸ 📡 同步到云端 relay_server...');
+  await sleep(400);
+  await addLogLine(p5log, '▸ ✅ 云端同步完成');
+
+  // Flashing completion
+  await sleep(400);
+  const done = document.createElement('div');
+  done.style.cssText = 'text-align:center;padding:30px 0;opacity:0;transition:opacity 1s';
+  done.innerHTML = `<div style="font-size:32px;margin-bottom:8px">✅</div>
+    <div style="font-size:18px;color:#3fb950;margin-bottom:4px">预测完成</div>
+    <div style="color:#8b949e;font-size:13px">${schedule.length} 条计划 | ${patterns.length} 条历史数据 | 设备就绪</div>`;
+  main.appendChild(done);
+  await sleep(100);
+  done.style.opacity = '1';
+
+  // Final spark celebration
+  const doneRect = done.getBoundingClientRect();
+  sparkBurst(doneRect.left+doneRect.width/2, doneRect.top+20, 20);
+  await sleep(200);
+  sparkBurst(doneRect.left+doneRect.width/3, doneRect.top+20, 15);
+  await sleep(150);
+  sparkBurst(doneRect.left+2*doneRect.width/3, doneRect.top+20, 15);
+
+  main.scrollTo({top: 0, behavior: 'smooth'});
+}
+</script>
+</body>
+</html>

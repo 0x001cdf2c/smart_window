@@ -45,7 +45,8 @@ void           control_set_mode(control_mode_t mode);
 
 /* --- Env-aware --- */
 
-env_action_t   control_env_evaluate(float temp, float humidity, float light);
+env_action_t   control_env_evaluate(float temp, float humidity, float light,
+                                     float smoke, float rain);
 float          control_env_target_angle(float temp, float humidity, float light);
 
 /* --- User-adaptive (learning) --- */

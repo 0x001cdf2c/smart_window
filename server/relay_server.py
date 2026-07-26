@@ -329,8 +329,6 @@ async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
     except Exception as e:
         log("ASR", f"base64解码失败: {e}")
 
-    log("ASR", f"收到音频块: {len(buf)} bytes total, is_end={inner.get('is_end')}")
-
     if inner.get("is_end"):
         if len(buf) < 1600:  # < 50ms, too short
             log("ASR", f"音频太短 ({len(buf)} bytes), 跳过")
@@ -339,32 +337,6 @@ async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
 
         pcm = bytes(buf)
         audio_buffers.pop(dev_id, None)
-
-        # 保存 WAV 用于调试
-        import struct, os, time as _time
-        debug_dir = "../audio"
-        os.makedirs(debug_dir, exist_ok=True)
-        ts = _time.strftime("%Y%m%d_%H%M%S")
-        wav_path = f"{debug_dir}/{dev_id}_{ts}.wav"
-        with open(wav_path, "wb") as f:
-            # WAV header
-            data_size = len(pcm)
-            f.write(b"RIFF")
-            f.write(struct.pack("<I", 36 + data_size))
-            f.write(b"WAVE")
-            f.write(b"fmt ")
-            f.write(struct.pack("<I", 16))       # chunk size
-            f.write(struct.pack("<H", 1))        # PCM
-            f.write(struct.pack("<H", 1))        # mono
-            f.write(struct.pack("<I", 16000))    # sample rate
-            f.write(struct.pack("<I", 32000))    # byte rate
-            f.write(struct.pack("<H", 2))        # block align
-            f.write(struct.pack("<H", 16))       # bits per sample
-            f.write(b"data")
-            f.write(struct.pack("<I", data_size))
-            f.write(pcm)
-        rms_val = int((sum(s*s for s in struct.unpack(f"<{len(pcm)//2}h", pcm)) / max(len(pcm)//2, 1)) ** 0.5) if len(pcm) >= 2 else 0
-        log("ASR", f"已保存: {wav_path} ({len(pcm)} bytes, RMS={rms_val})")
 
         loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=1) as pool:
