@@ -974,7 +974,7 @@ static void sensor_task(void *arg)
             const schedule_plan_t *plan = control_adaptive_get_plan();
             if (plan && plan->count > 0) {
                 char sch[512];
-                int off = snprintf(sch, sizeof(sch), "[");
+                int off = snprintf(sch, sizeof(sch), "{\"entries\":[");
                 for (int i = 0; i < plan->count; i++) {
                     off += snprintf(sch + off, sizeof(sch) - off,
                         "%s{\"time\":\"%s\",\"action\":\"%s\",\"angle\":%d,\"confidence\":%d}",
@@ -984,7 +984,7 @@ static void sensor_task(void *arg)
                         plan->entries[i].angle,
                         plan->entries[i].confidence);
                 }
-                off += snprintf(sch + off, sizeof(sch) - off, "]");
+                off += snprintf(sch + off, sizeof(sch) - off, "]}");
                 msg_bus_send("schedule", sch);
             }
         }

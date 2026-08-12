@@ -1248,11 +1248,8 @@ function handleMessage(msg) {
   }
 
   // ── schedule data (adaptive predictions) ──
-  if (msg.type === 'schedule') {
-    try {
-      const raw = typeof pl === 'string' ? JSON.parse(pl) : pl;
-      updateScheduleCard(Array.isArray(raw) ? raw : [], 'adaptive');
-    } catch(e) { console.log('schedule parse err', e); }
+  if (pl.type === 'schedule') {
+    updateScheduleCard(pl.entries || [], 'adaptive');
     return;
   }
 

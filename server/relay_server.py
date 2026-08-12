@@ -497,7 +497,7 @@ def fetch_adaptive(user_msg: str) -> dict | None:
                 {"role": "system", "content": ADAPTIVE_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "max_tokens": 300,
+            "max_tokens": 800,
             "temperature": 0.5,
         }, headers={
             "Authorization": f"Bearer {LLM_API_KEY}",
@@ -506,6 +506,12 @@ def fetch_adaptive(user_msg: str) -> dict | None:
         resp.raise_for_status()
         data = resp.json()
         raw = data["choices"][0]["message"]["content"].strip()
+        finish = data["choices"][0].get("finish_reason", "?")
+
+        if not raw:
+            log("ADAPTIVE", f"DeepSeek 返回空内容 (finish_reason={finish}, "
+                f"usage={data.get('usage', {})})")
+            return None
 
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
@@ -516,6 +522,9 @@ def fetch_adaptive(user_msg: str) -> dict | None:
         result = json.loads(raw)
         log("ADAPTIVE", f"云端计划: {result.get('plan', [])}")
         return result
+    except json.JSONDecodeError as e:
+        log("ADAPTIVE", f"JSON解析失败: {e} | raw={raw[:200]}")
+        return None
     except Exception as e:
         log("ADAPTIVE", f"失败: {e}")
         return None
