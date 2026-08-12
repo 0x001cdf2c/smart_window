@@ -123,7 +123,7 @@ static void top_bar_create(lv_obj_t *screen)
     lv_obj_set_style_shadow_color(bar, lv_color_hex(0x000000), 0);
 
     /* Title */
-    lv_obj_t *title = cjk_label_make(bar, "智能窗帘", C_TEXT);
+    lv_obj_t *title = cjk_label_make(bar, "智能窗户", C_TEXT);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 20, 0);
 
     /* Connection LED + text */

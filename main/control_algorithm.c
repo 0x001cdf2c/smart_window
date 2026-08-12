@@ -36,7 +36,7 @@ typedef struct {
     uint8_t hour;
     uint8_t min;
     uint8_t day_of_week;    /* 0=Sun .. 6=Sat */
-    uint8_t action;         /* 0=close, 1=open */
+    uint8_t angle;          /* 0°=全开 .. 90°=全关 */
 } pattern_entry_t;
 
 typedef struct {
@@ -261,7 +261,58 @@ float control_env_target_angle(float temp, float humidity, float light)
 
 /* --- User-adaptive --- */
 
-void control_adaptive_record(const char *action)
+/* 载入演示数据: 直接写入NVS, 时间分散在最近几天 */
+void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
+                                 const uint8_t *mins, int count)
+{
+    pattern_store_t *store = nvs_load_patterns();
+    time_t base = time(NULL);
+
+    for (int i = 0; i < count && store->count < PATTERN_MAX; i++) {
+        /* 每条记录回退 (count - i) * 6 小时, 分散在几天内 */
+        time_t t = base - (count - i) * 6 * 3600;
+        struct tm tm;
+        localtime_r(&t, &tm);
+
+        /* 覆盖为指定的时分 */
+        tm.tm_hour = hours[i];
+        tm.tm_min  = mins[i];
+
+        pattern_entry_t *e = &store->entries[store->count];
+        memset(e, 0, sizeof(*e));
+        e->hour = (uint8_t)tm.tm_hour;
+        e->min  = (uint8_t)tm.tm_min;
+        e->day_of_week = (uint8_t)tm.tm_wday;
+        e->angle = angles[i];
+        store->count++;
+    }
+
+    nvs_save_patterns(store);
+
+    /* 同时填充 recent_ops 以更新屏幕显示 */
+    s_recent_count = 0;
+    int start = store->count > RECENT_OPS_MAX ? store->count - RECENT_OPS_MAX : 0;
+    for (int i = start; i < store->count; i++) {
+        int ri = s_recent_count;
+        snprintf(s_recent_ops[ri].time_str, sizeof(s_recent_ops[ri].time_str),
+                 "%02d:%02d", store->entries[i].hour, store->entries[i].min);
+        uint8_t a = store->entries[i].angle;
+        if (a < 15) strcpy(s_recent_ops[ri].action, "开窗");
+        else if (a > 75) strcpy(s_recent_ops[ri].action, "关窗");
+        else strcpy(s_recent_ops[ri].action, "半开");
+        s_recent_ops[ri].angle = a;
+        s_recent_ops[ri].day_offset = 0;
+        s_recent_count++;
+    }
+
+    printf("╔══════════════════════════════════════════════╗\n");
+    printf("║   Demo 载入完成: %d 条记录 (共%d条)            ║\n",
+           count, store->count);
+    printf("╚══════════════════════════════════════════════╝\n");
+    fflush(stdout);
+}
+
+void control_adaptive_record(float angle)
 {
     pattern_store_t *store = nvs_load_patterns();
     if (store->count >= PATTERN_MAX) {
@@ -274,27 +325,37 @@ void control_adaptive_record(const char *action)
     struct tm tm;
     localtime_r(&now, &tm);
 
+    uint8_t a = (uint8_t)(angle + 0.5f);
+    if (a > 90) a = 90;
+
     pattern_entry_t *e = &store->entries[store->count++];
     e->hour = (uint8_t)tm.tm_hour;
     e->min  = (uint8_t)tm.tm_min;
     e->day_of_week = (uint8_t)tm.tm_wday;
-    e->action = (strcmp(action, "open") == 0) ? 1 : 0;
+    e->angle = a;
 
     nvs_save_patterns(store);
 
-    /* Shift existing entries right, newest at [0] */
+    /* Shift recent ops, newest at [0] */
     int keep = s_recent_count;
     if (keep >= RECENT_OPS_MAX) keep = RECENT_OPS_MAX - 1;
     memmove(&s_recent_ops[1], &s_recent_ops[0], keep * sizeof(recent_op_t));
     if (s_recent_count < RECENT_OPS_MAX) s_recent_count++;
 
+    /* Derive action label from angle */
+    const char *label;
+    if (a <= 15)       label = "开窗";
+    else if (a >= 75)  label = "关窗";
+    else              label = "半开";
+
     recent_op_t *r = &s_recent_ops[0];
     snprintf(r->time_str, sizeof(r->time_str), "%02d:%02d", tm.tm_hour, tm.tm_min);
-    snprintf(r->action, sizeof(r->action), "%s", action);
+    snprintf(r->action, sizeof(r->action), "%s", label);
+    r->angle = a;
     r->day_offset = 0;
 
-    ESP_LOGI(TAG, "Recorded %s at %02d:%02d (day %d, total %d)",
-             action, e->hour, e->min, e->day_of_week, store->count);
+    ESP_LOGI(TAG, "Recorded angle=%d° (%s) at %02d:%02d (total %d)",
+             a, label, e->hour, e->min, store->count);
 }
 
 const recent_op_t *control_adaptive_get_recent_ops(int *out_count)
@@ -304,106 +365,254 @@ const recent_op_t *control_adaptive_get_recent_ops(int *out_count)
 }
 
 /*
- * 自适应模式 —— 预测用户作息计划
+ * 自适应模式 — 角度预测 (时间桶)
  *
- * 伪代码:
- *   1. 从 NVS 加载历史操作记录
- *   2. 如果记录数 < 5, 样本不足, 直接返回
- *   3. 将 24 小时分成 24 个桶, 分别统计每小时的:
- *      - open_buckets[h]:  该小时 "开窗" 次数
- *      - close_buckets[h]: 该小时 "关窗" 次数
- *      - count_buckets[h]: 该小时总操作次数
- *   4. 从 open_buckets 中选出频次最高的 2 个小时 → 生成开窗计划
- *   5. 从 close_buckets 中选出频次最高的 2 个小时 → 生成关窗计划
- *   6. 每条计划的置信度 = 目标动作次数 / 该小时总操作次数 × 100%
- *   7. 分钟固定为 :30（取整到半点）
- *   8. 结果写入 s_schedule 并持久化到 NVS
+ * 算法:
+ *   1. 加载历史, 少于5条则跳过
+ *   2. 24小时桶, 每桶记录: 角度总和、记录数
+ *   3. 每桶 = 总和/数量 = 平均习惯角度
+ *   4. 选出记录数最多的4个桶 → 生成计划
+ *   5. 置信度 = 该桶记录数 / 总记录数 × 100%
  */
 void control_adaptive_predict(void)
 {
-    /* 1. 加载历史记录, 清空旧计划 */
     pattern_store_t *store = nvs_load_patterns();
     memset(&s_schedule, 0, sizeof(s_schedule));
 
-    /* 2. 样本不足则跳过预测 */
     if (store->count < 5) {
         ESP_LOGI(TAG, "Not enough data for prediction (%d entries)", store->count);
         return;
     }
 
-    /* 3. 按小时桶统计开关窗频次 */
-    int open_buckets[24] = {0};
-    int close_buckets[24] = {0};
+    /* 24h buckets: sum of angles + count per hour */
+    float angle_sum[24] = {0};
     int count_buckets[24] = {0};
 
     for (int i = 0; i < store->count; i++) {
         int h = store->entries[i].hour;
-        if (store->entries[i].action == 1) open_buckets[h]++;
-        else close_buckets[h]++;
+        angle_sum[h] += (float)store->entries[i].angle;
         count_buckets[h]++;
     }
 
-    /* 4. 选出开窗频次最高的 2 个小时 */
+    /* Sort by count descending, pick top 4 */
+    int order[24];
+    for (int h = 0; h < 24; h++) order[h] = h;
+
+    for (int i = 0; i < 23; i++) {
+        for (int j = i + 1; j < 24; j++) {
+            if (count_buckets[order[j]] > count_buckets[order[i]]) {
+                int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+            }
+        }
+    }
+
     int plan_idx = 0;
-    for (int pick = 0; pick < 2 && plan_idx < SCHEDULE_MAX_ENTRIES; pick++) {
-        /* 4a. 遍历 24 个桶, 找当前开窗次数最多的那个 */
-        int best_h = -1, best_cnt = 0;
-        for (int h = 0; h < 24; h++) {
-            if (open_buckets[h] > best_cnt) {
-                best_cnt = open_buckets[h];
-                best_h = h;
-            }
-        }
-        /* 4b. 命中则生成一条开窗计划项 */
-        if (best_h >= 0 && best_cnt > 0 && count_buckets[best_h] > 0) {
-            /* 置信度 = 开窗次数 / 该小时总操作次数 */
-            s_schedule.entries[plan_idx].confidence =
-                open_buckets[best_h] * 100 / count_buckets[best_h];
-            /* 时间取该小时的 :30 分 */
-            int h = best_h % 24;
-            s_schedule.entries[plan_idx].time_str[0] = (char)('0' + h / 10);
-            s_schedule.entries[plan_idx].time_str[1] = (char)('0' + h % 10);
-            s_schedule.entries[plan_idx].time_str[2] = ':';
-            s_schedule.entries[plan_idx].time_str[3] = '3';
-            s_schedule.entries[plan_idx].time_str[4] = '0';
-            s_schedule.entries[plan_idx].time_str[5] = '\0';
-            snprintf(s_schedule.entries[plan_idx].action, 8, "open");
-            plan_idx++;
-            open_buckets[best_h] = 0;  /* 已消费, 置零防止重复选中 */
-        }
+    for (int i = 0; i < 24 && plan_idx < SCHEDULE_MAX_ENTRIES; i++) {
+        int h = order[i];
+        if (count_buckets[h] == 0) break;
+
+        uint8_t avg_angle = (uint8_t)(angle_sum[h] / count_buckets[h] + 0.5f);
+        if (avg_angle > 90) avg_angle = 90;
+
+        const char *act;
+        if (avg_angle <= 15)      act = "open";
+        else if (avg_angle >= 75) act = "close";
+        else                     act = "half";
+
+        schedule_entry_t *e = &s_schedule.entries[plan_idx];
+        snprintf(e->time_str, sizeof(e->time_str), "%02d:%02d", h % 24, 30);
+        snprintf(e->action, sizeof(e->action), "%s", act);
+        e->angle = avg_angle;
+        e->confidence = count_buckets[h] * 100 / store->count;
+        plan_idx++;
     }
 
-    /* 5. 选出关窗频次最高的 2 个小时（逻辑同上） */
-    for (int pick = 0; pick < 2 && plan_idx < SCHEDULE_MAX_ENTRIES; pick++) {
-        /* 5a. 遍历 24 个桶, 找当前关窗次数最多的那个 */
-        int best_h = -1, best_cnt = 0;
-        for (int h = 0; h < 24; h++) {
-            if (close_buckets[h] > best_cnt) {
-                best_cnt = close_buckets[h];
-                best_h = h;
-            }
-        }
-        /* 5b. 命中则生成一条关窗计划项 */
-        if (best_h >= 0 && best_cnt > 0 && count_buckets[best_h] > 0) {
-            s_schedule.entries[plan_idx].confidence =
-                close_buckets[best_h] * 100 / count_buckets[best_h];
-            int h = best_h % 24;
-            s_schedule.entries[plan_idx].time_str[0] = (char)('0' + h / 10);
-            s_schedule.entries[plan_idx].time_str[1] = (char)('0' + h % 10);
-            s_schedule.entries[plan_idx].time_str[2] = ':';
-            s_schedule.entries[plan_idx].time_str[3] = '3';
-            s_schedule.entries[plan_idx].time_str[4] = '0';
-            s_schedule.entries[plan_idx].time_str[5] = '\0';
-            snprintf(s_schedule.entries[plan_idx].action, 8, "close");
-            plan_idx++;
-            close_buckets[best_h] = 0;  /* 已消费 */
-        }
-    }
-
-    /* 6. 写入最终计划并持久化 */
     s_schedule.count = plan_idx;
     nvs_save_schedule();
-    ESP_LOGI(TAG, "Prediction done: %d schedule entries", s_schedule.count);
+    ESP_LOGI(TAG, "Angle prediction: %d entries", s_schedule.count);
+}
+
+/*
+ * 传感器感知角度预测
+ *
+ * 与纯时间桶的区别:
+ *   每个小时不仅平均值, 还会被当前环境偏移:
+ *     - 偏热 → 角度偏移 -20° (更开)
+ *     - 偏冷 → 角度偏移 +15° (更关)
+ *     - 强光 → 角度偏移 +20° (更关)
+ *     - 偏暗 → 角度偏移 -15° (更开)
+ *     - 偏湿 → 角度偏移 -10° (更开)
+ *   时间相似度传播: 同小时 1.0 → 相邻 0.5 → 远 0.1
+ */
+void control_adaptive_predict_sensor_aware(float temp, float humidity, float light)
+{
+    pattern_store_t *store = nvs_load_patterns();
+    memset(&s_schedule, 0, sizeof(s_schedule));
+
+    /* ═══ 串口头 ═══ */
+    printf("\n");
+    printf("╔══════════════════════════════════════════════════╗\n");
+    printf("║   角度预测 (时间+温/湿/光 加权)                    ║\n");
+    printf("╠══════════════════════════════════════════════════╣\n");
+    printf("║ 历史数据: %3d 条                                   ║\n", store->count);
+
+    if (store->count < 5) {
+        printf("║ 样本不足 (%d < 5), 回退到纯时间桶                   ║\n", store->count);
+        printf("╚══════════════════════════════════════════════════╝\n");
+        fflush(stdout);
+        control_adaptive_predict();
+        return;
+    }
+
+    /* ── 传感器偏移 ── */
+    float angle_offset = 0.0f;
+    printf("║ 当前环境: T=%.1f C  H=%.0f%%  L=%.0f lux            ║\n",
+           temp, humidity, light);
+    printf("╠══════════════════════════════════════════════════╣\n");
+    printf("║ 传感器偏移:                                        ║\n");
+
+    if (temp > 28.0f) {
+        angle_offset -= 20.0f;
+        printf("║   ✓ 偏热 (%.1f > 28) → 角度-20 (更开)             ║\n", temp);
+    }
+    if (temp < 15.0f) {
+        angle_offset += 15.0f;
+        printf("║   ✓ 偏冷 (%.1f < 15) → 角度+15 (更关)             ║\n", temp);
+    }
+    if (humidity > 70.0f) {
+        angle_offset -= 10.0f;
+        printf("║   ✓ 偏湿 (%.0f%% > 70) → 角度-10 (更开)           ║\n", humidity);
+    }
+    if (light > 35000.0f) {
+        angle_offset += 20.0f;
+        printf("║   ✓ 强光 (%.0f > 35k) → 角度+20 (更关)            ║\n", light);
+    } else if (light < 500.0f) {
+        angle_offset -= 15.0f;
+        printf("║   ✓ 偏暗 (%.0f < 500) → 角度-15 (更开)            ║\n", light);
+    }
+
+    if (angle_offset == 0.0f) {
+        printf("║   — 环境适中, 无偏移调整                            ║\n");
+    }
+    printf("║  角度总偏移: %+.0f                                  ║\n", angle_offset);
+
+    /* ── 24h 桶: 加权角度和 + 权重总和 ── */
+    float w_angle[24] = {0};
+    float w_total[24] = {0};
+    int raw_count[24] = {0};
+
+    /* Count raw records per hour for confidence */
+    for (int i = 0; i < store->count; i++) {
+        raw_count[store->entries[i].hour]++;
+    }
+
+    for (int h = 0; h < 24; h++) {
+        for (int i = 0; i < store->count; i++) {
+            int ph = store->entries[i].hour;
+            int diff = abs(h - ph);
+            if (diff > 12) diff = 24 - diff;
+
+            float time_sim;
+            if (diff == 0)      time_sim = 1.0f;
+            else if (diff == 1) time_sim = 0.50f;
+            else if (diff == 2) time_sim = 0.25f;
+            else                time_sim = 0.05f;
+
+            w_angle[h] += (float)store->entries[i].angle * time_sim;
+            w_total[h] += time_sim;
+        }
+    }
+
+    /* ── 柱状图 ── */
+    printf("╠══════════════════════════════════════════════════╣\n");
+    printf("║ 24h 预测角度图 (O=开窗 0   C=关窗 90)              ║\n");
+    printf("║                                                  ║\n");
+
+    for (int h = 0; h < 24; h++) {
+        float raw_avg = w_total[h] > 0.01f ? w_angle[h] / w_total[h] : 45.0f;
+        float adj_avg = raw_avg + angle_offset;
+        if (adj_avg < 0) adj_avg = 0;
+        if (adj_avg > 90) adj_avg = 90;
+
+        /* Bar: O=open(~0 ), C=close(~90), mid=mixed */
+        int bar_len = (int)(adj_avg / 90.0f * 28.0f + 0.5f);
+        if (bar_len > 28) bar_len = 28;
+        char bar[30];
+        for (int j = 0; j < 28; j++) bar[j] = (j < bar_len) ? 'C' : 'O';
+        bar[28] = '\0';
+
+        printf("║ %02d [%s] %5.0f  |%d rec                 ║\n",
+               h, bar, adj_avg, raw_count[h]);
+    }
+
+    printf("╠══════════════════════════════════════════════════╣\n");
+
+    /* ── 选 Top-4 记录最多的小时 ── */
+    int order[24];
+    for (int h = 0; h < 24; h++) order[h] = h;
+
+    for (int i = 0; i < 23; i++) {
+        for (int j = i + 1; j < 24; j++) {
+            if (raw_count[order[j]] > raw_count[order[i]]) {
+                int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+            }
+        }
+    }
+
+    int plan_idx = 0;
+    for (int i = 0; i < 24 && plan_idx < SCHEDULE_MAX_ENTRIES; i++) {
+        int h = order[i];
+        if (raw_count[h] == 0) break;
+
+        float raw_avg = w_total[h] > 0.01f ? w_angle[h] / w_total[h] : 45.0f;
+        float adj_avg = raw_avg + angle_offset;
+        if (adj_avg < 0) adj_avg = 0;
+        if (adj_avg > 90) adj_avg = 90;
+        uint8_t a = (uint8_t)(adj_avg + 0.5f);
+
+        const char *act;
+        if (a <= 15)      act = "open";
+        else if (a >= 75) act = "close";
+        else             act = "half";
+
+        schedule_entry_t *e = &s_schedule.entries[plan_idx];
+        snprintf(e->time_str, sizeof(e->time_str), "%02d:%02d", h % 24, 30);
+        snprintf(e->action, sizeof(e->action), "%s", act);
+        e->angle = a;
+        e->confidence = raw_count[h] * 100 / store->count;
+        plan_idx++;
+    }
+
+    s_schedule.count = plan_idx;
+
+    /* ── 预测表 ── */
+    printf("║ 预测计划 (传感器感知 + 角度):                      ║\n");
+    printf("║ ┌────┬────────┬────────┬────────┬──────┐        ║\n");
+    printf("║ │  # │  时间   │  角度   │  动作   │ 置信度 │        ║\n");
+    printf("║ ├────┼────────┼────────┼────────┼──────┤        ║\n");
+
+    if (plan_idx == 0) {
+        printf("║ │  — │   —    │   —    │   —    │  样本不足│      ║\n");
+    } else {
+        for (int i = 0; i < plan_idx; i++) {
+            const char *act_label;
+            if (strcmp(s_schedule.entries[i].action, "open") == 0)   act_label = "开窗";
+            else if (strcmp(s_schedule.entries[i].action, "close") == 0) act_label = "关窗";
+            else                                                     act_label = "半开";
+            printf("║ │ %d  │ %s  │   %3d   │  %s   │  %3d%%  │        ║\n",
+                   i + 1, s_schedule.entries[i].time_str,
+                   s_schedule.entries[i].angle,
+                   act_label,
+                   s_schedule.entries[i].confidence);
+        }
+    }
+    printf("║ └────┴────────┴────────┴────────┴──────┘        ║\n");
+    printf("╚══════════════════════════════════════════════════╝\n");
+    fflush(stdout);
+
+    nvs_save_schedule();
+    ESP_LOGI(TAG, "Angle prediction: %d entries (T=%.1f H=%.0f L=%.0f offset=%+.0f)",
+             s_schedule.count, temp, humidity, light, angle_offset);
 }
 
 const schedule_plan_t *control_adaptive_get_plan(void)

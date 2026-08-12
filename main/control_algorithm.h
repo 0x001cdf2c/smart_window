@@ -22,7 +22,8 @@ typedef enum {
 
 typedef struct {
     char time_str[8];       /* "HH:MM" */
-    char action[8];         /* "open" / "close" */
+    char action[8];         /* "open" / "close" / "half" */
+    uint8_t angle;          /* target angle 0-90 */
     int  confidence;        /* 0-100% */
 } schedule_entry_t;
 
@@ -51,14 +52,18 @@ float          control_env_target_angle(float temp, float humidity, float light)
 
 /* --- User-adaptive (learning) --- */
 
-void control_adaptive_record(const char *action);   /* "open" or "close" */
+void control_adaptive_record(float angle);   /* 0°=全开, 90°=全关 */
+void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
+                                 const uint8_t *mins, int count);
 void control_adaptive_predict(void);
+void control_adaptive_predict_sensor_aware(float temp, float humidity, float light);
 const schedule_plan_t *control_adaptive_get_plan(void);
 
 #define RECENT_OPS_MAX 10
 typedef struct {
     char time_str[8];    /* "HH:MM" */
-    char action[8];      /* "open"/"close" */
+    char action[8];      /* "开窗"/"关窗"/"半开" */
+    uint8_t angle;       /* 0-90 */
     int  day_offset;     /* 0=today, 1=yesterday ... */
 } recent_op_t;
 

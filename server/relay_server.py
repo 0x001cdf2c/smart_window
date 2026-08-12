@@ -35,6 +35,73 @@ WMO_CODES = {
     85: "阵雪", 86: "阵雪", 95: "雷暴", 96: "冰雹", 99: "强冰雹",
 }
 
+# ── 逐小时天气摘要 (从 hourly 数据生成口语化播报) ──
+def _build_hourly_summary(hourly: dict) -> str:
+    """Generate a natural-language summary like '大部分时间晴, 下午3-5点有阵雨'."""
+    if not hourly:
+        return ""
+
+    times = hourly.get("time", [])
+    codes = hourly.get("weather_code", [])
+    rain_probs = hourly.get("precipitation_probability", [])
+
+    if not times or not codes:
+        return ""
+
+    # 统计主导天气
+    code_count = {}
+    for c in codes:
+        code_count[c] = code_count.get(c, 0) + 1
+    dominant_code = max(code_count, key=code_count.get)
+    dominant_text = WMO_CODES.get(dominant_code, "多云")
+    dominant_hours = code_count[dominant_code]
+    total_hours = len(codes)
+
+    parts = []
+
+    # 主导天气描述
+    if dominant_hours >= total_hours * 0.7:
+        parts.append(f"全天大部分时间{dominant_text}")
+    elif dominant_hours >= total_hours * 0.4:
+        parts.append(f"大部分时间{dominant_text}")
+    else:
+        parts.append(f"天气{dominant_text}")
+
+    # 降雨时段
+    rain_slots = []
+    for i, t in enumerate(times):
+        prob = rain_probs[i] if i < len(rain_probs) else 0
+        if prob >= 50:
+            hour = t.split("T")[1][:2] if "T" in t else ""
+            if hour:
+                rain_slots.append((int(hour), prob))
+
+    if rain_slots:
+        # 合并连续降雨时段
+        rain_slots.sort()
+        merged = []
+        start_h, start_p = rain_slots[0]
+        end_h, max_p = start_h, start_p
+        for i in range(1, len(rain_slots)):
+            h, p = rain_slots[i]
+            if h == end_h + 1:
+                end_h = h
+                max_p = max(max_p, p)
+            else:
+                merged.append((start_h, end_h, max_p))
+                start_h, end_h, max_p = h, h, p
+        merged.append((start_h, end_h, max_p))
+
+        rain_strs = []
+        for sh, eh, p in merged:
+            if sh == eh:
+                rain_strs.append(f"{sh}点")
+            else:
+                rain_strs.append(f"{sh}-{eh}点")
+        parts.append(f"{'、'.join(rain_strs)}有{'雨' if rain_slots[0][1] >= 70 else '可能下雨'}")
+
+    return "，".join(parts) if parts else dominant_text
+
 # ── DeepSeek ──
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-10e46871ed9545e9a644f1419a3208a7")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -59,6 +126,33 @@ clients: dict[str, set] = {}
 ws_to_device: dict[any, str] = {}
 ws_to_role: dict[any, str] = {}
 
+# ── 自适应模式云端增强 prompt ──
+ADAPTIVE_PROMPT = """你是一个智能窗户的云端大脑。设备端已完成本地学习，给你以下数据：
+
+1. 用户最近操作记录 (时间+角度+多少天前)
+2. 本地预测的开窗计划 (基于时间桶+传感器偏移)
+3. 当前室内传感器数据
+4. 室外天气数据
+
+请分析用户习惯，返回优化后的开窗计划。
+
+返回纯JSON (不要markdown):
+{
+  "plan": [
+    {"time": "08:00", "angle": 0},
+    {"time": "12:00", "angle": 90}
+  ],
+  "reply": "口语化解释, 30字以内"
+}
+
+规则:
+- plan最多4条, 按时间排序
+- angle: 0=全开, 90=全关, 30-60=半开
+- 考虑天气因素: 下雨天减少开窗时段, 高温天中午关窗遮阳
+- 参考用户历史习惯: 相近时间的操作权重更高
+- reply用口语气息解释你的决策 (呀、啦、嘛、呢)
+"""
+
 # ============================================================
 # 全局
 # ============================================================
@@ -75,8 +169,8 @@ def log(tag: str, msg: str):
 # NLP: kourichat gpt-4o-mini (意图理解+口语回复)
 # ============================================================
 # 阿里云 NUI
-ALIBABA_AK_ID  = os.environ.get("ALIBABA_AK_ID", "LTAI5t7aY6b9GnD1EeHkap9c")
-ALIBABA_AK_SEC = os.environ.get("ALIBABA_AK_SEC", "VvmHTFHZRxoSeiXKSSRp6ucx602f3l")
+ALIBABA_AK_ID  = os.environ.get("ALIBABA_AK_ID", "LTAI5tAWbBNG1czQ2UWZj6LR")
+ALIBABA_AK_SEC = os.environ.get("ALIBABA_AK_SEC", "q9eGtr2Y95nuMpQDnzpIw6H9rCd4eZ")
 NUI_APPKEY     = os.environ.get("NUI_APPKEY", "F1cFX8KM7SWl1UBE")
 # kourichat (OpenAI-compatible)
 LLM_API_KEY  = os.environ.get("LLM_API_KEY", DEEPSEEK_API_KEY)
@@ -86,7 +180,7 @@ LLM_MODEL    = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 # Per-device audio accumulation
 audio_buffers: dict[str, bytearray] = {}
 
-VOICE_SYSTEM_PROMPT = """你是一个智能窗帘语音助手。会收到一段用户语音，结合传感器和天气数据，判断意图并回复。
+VOICE_SYSTEM_PROMPT = """你是一个智能窗户语音助手。会收到一段用户语音，结合传感器和天气数据，判断意图并回复。
 
 返回JSON (纯JSON, 不要markdown代码块):
 {"action": "<open|close|chat|timer>", "reply": "<口语回复, 30字以内>"}
@@ -105,6 +199,22 @@ VOICE_SYSTEM_PROMPT = """你是一个智能窗帘语音助手。会收到一段�
 - "五分钟后" → 当前时间+5分钟(HH:MM格式)
 
 reply: 口语气息, 像朋友聊天, 加点语气词(呀、啦、嘛、哦、呢、哈), 30字以内
+
+★★★ 关键: "执行"模式 vs 自主模式 ★★★
+
+1. 用户说了"执行"(如"执行,打开窗户"):
+   → 必须忠实执行用户的命令 (action用用户想要的open/close)
+   → reply中可附加一句天气建议, 但命令不能改
+   → 例: {"action":"open","reply":"打开了~ 不过外面35度有点热哦"}
+
+2. 用户没提"执行"(如"打开窗户"):
+   → 根据天气/传感器数据自主判断是否执行
+   → 下雨/雷暴/大风/沙尘暴/严重雾霾 → 建议别开窗, action="chat", reply解释原因
+   → 外面比屋里热很多(>30°C且室内<28°C) → 建议别开窗
+   → 天气合适 → 执行用户命令
+   → 例(下雨): {"action":"chat","reply":"外面正下雨呢, 等雨停再开吧~"}
+   → 例(太热): {"action":"chat","reply":"现在外面35度, 开着窗更热, 先别开啦"}
+   → 例(合适): {"action":"open","reply":"天不错, 开窗透透气~"}
 
 示例:
 {"action": "open", "reply": "是有点闷, 开窗透透气~"}
@@ -134,6 +244,7 @@ def fetch_weather(city_name: str) -> dict | None:
             "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
                      "precipitation_probability_max,wind_speed_10m_max",
+            "hourly": "weather_code,precipitation_probability,precipitation,temperature_2m",
             "timezone": "auto", "forecast_days": 1,
         }, timeout=10)
         w.raise_for_status()
@@ -141,8 +252,12 @@ def fetch_weather(city_name: str) -> dict | None:
 
         daily = w_data.get("daily", {})
         current = w_data.get("current", {})
+        hourly = w_data.get("hourly", {})
         daily_code = (daily.get("weather_code") or [0])[0]
         weather_text = WMO_CODES.get(daily_code, f"code{daily_code}")
+
+        # 从逐小时数据生成详细天气摘要
+        weather_detail = _build_hourly_summary(hourly)
 
         wind_dir = current.get("wind_direction_10m", 0)
         dirs = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
@@ -151,6 +266,7 @@ def fetch_weather(city_name: str) -> dict | None:
         return {
             "city": loc.get("name", city_name),
             "weather": weather_text,
+            "weather_detail": weather_detail,
             "high": (daily.get("temperature_2m_max") or [0])[0],
             "low": (daily.get("temperature_2m_min") or [0])[0],
             "rain_pct": (daily.get("precipitation_probability_max") or [0])[0],
@@ -275,6 +391,28 @@ def fetch_asr(pcm_data: bytes, sample_rate: int = 16000) -> str | None:
         log("ASR", f"识别失败: {e}")
         return None
 
+# ── Fallback NLP: 云端失败时用关键词匹配 (保证必有语音回复) ──
+def fallback_nlp(text: str) -> dict | None:
+    """Simple keyword fallback when DeepSeek is unavailable.
+    Returns None ONLY for timer commands that need time extraction."""
+    has_open = any(w in text for w in ["打开", "开窗", "开开", "通风", "透气", "换气",
+                                        "太闷", "闷死", "热死", "有点热", "凉快"])
+    has_close = any(w in text for w in ["关闭", "关窗", "关上", "遮光", "遮阳",
+                                         "防晒", "太晒", "太亮", "刺眼", "反光"])
+    has_stop = any(w in text for w in ["停止", "暂停", "别动", "取消"])
+    has_timer = any(w in text for w in ["点", "分", "半", "定时", "后", "分钟", "小时"])
+
+    if has_timer and (has_open or has_close):
+        return None  # timer needs time extraction, can't fallback
+    if has_open:
+        return {"action": "open", "reply": "好的，打开窗户~"}
+    if has_close:
+        return {"action": "close", "reply": "好的，关上窗户~"}
+    if has_stop:
+        return {"action": "close", "reply": "收到，已停止"}  # close action stops servo
+    # 所有其他情况 (包括闲聊) → 至少给个语音回复
+    return {"action": "chat", "reply": "嗯嗯，我在听~"}
+
 # ── NLP: text + context → DeepSeek → intent + reply ──
 def fetch_nlp(text: str, context: str) -> dict | None:
     """Send recognized text + sensor/weather context to gpt-4o-mini via kourichat (blocking).
@@ -311,8 +449,75 @@ def fetch_nlp(text: str, context: str) -> dict | None:
             return None
         log("NLP", f"意图={result.get('action')} 回复={result.get('reply')}")
         return result
+    except requests.exceptions.HTTPError as e:
+        log("NLP", f"HTTP错误 {e.response.status_code}: {e.response.text[:200]}")
+        return None
     except Exception as e:
         log("NLP", f"失败: {e}")
+        return None
+
+# ── 自适应模式云端增强 ──
+async def handle_adaptive_query(dev_id: str, data: dict):
+    """设备本地学习完成 → 发送摘要到 DeepSeek → 返回增强计划."""
+    # 构建天气上下文
+    weather_ctx = ""
+    if latest_weather_data:
+        w = latest_weather_data
+        detail = w.get('weather_detail', '')
+        weather_ctx = (f"室外: {w.get('weather','--')}, {w.get('low','--')}~{w.get('high','--')}°C, "
+                       f"降水{w.get('rain_pct','--')}%")
+        if detail:
+            weather_ctx += f", {detail}"
+
+    user_msg = json.dumps({
+        "用户操作记录": data.get("recent_ops", []),
+        "本地预测计划": data.get("predictions", []),
+        "室内传感器": f"温度{data.get('temp','--')}°C 湿度{data.get('humidity','--')}% 光照{data.get('light','--')}lux",
+        "天气": weather_ctx,
+    }, ensure_ascii=False, indent=2)
+
+    log("ADAPTIVE", f"发送增强查询 (records={len(data.get('recent_ops',[]))}, "
+                    f"predictions={len(data.get('predictions',[]))})")
+
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = await loop.run_in_executor(pool, fetch_adaptive, user_msg)
+
+    if result:
+        await send_to_device(dev_id, {"type": "adaptive_plan", **result})
+    else:
+        log("ADAPTIVE", "云端增强失败, 使用本地计划")
+
+def fetch_adaptive(user_msg: str) -> dict | None:
+    """Call DeepSeek to refine adaptive plan."""
+    try:
+        resp = requests.post(f"{LLM_BASE_URL}/chat/completions", json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": ADAPTIVE_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            "max_tokens": 300,
+            "temperature": 0.5,
+        }, headers={
+            "Authorization": f"Bearer {LLM_API_KEY}",
+            "Content-Type": "application/json",
+        }, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data["choices"][0]["message"]["content"].strip()
+
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+        result = json.loads(raw)
+        log("ADAPTIVE", f"云端计划: {result.get('plan', [])}")
+        return result
+    except Exception as e:
+        log("ADAPTIVE", f"失败: {e}")
         return None
 
 # ── Async handlers for ASR pipeline ──
@@ -349,7 +554,7 @@ async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
         # Send ASR result to device
         await send_to_device(dev_id, {"type": "asr_result", "text": text})
 
-async def handle_asr_text(dev_id: str, text: str, device_ws):
+async def handle_asr_text(dev_id: str, text: str, force_exec: bool, device_ws):
     """Combine text with sensor/weather context, call DeepSeek, return intent+reply."""
     if not text:
         return
@@ -364,18 +569,26 @@ async def handle_asr_text(dev_id: str, text: str, device_ws):
             f"光照{s.get('light','--')} lux")
     if latest_weather_data:
         w = latest_weather_data
+        detail = w.get('weather_detail', '')
         ctx_parts.append(
             f"天气: {w.get('weather','--')}, "
             f"{w.get('low','--')}~{w.get('high','--')}°C, "
-            f"降水概率{w.get('rain_pct','--')}%")
+            f"降水概率{w.get('rain_pct','--')}%"
+            + (f", 详细: {detail}" if detail else ""))
     context = "\n".join(ctx_parts) if ctx_parts else "暂无传感器数据"
+    if force_exec:
+        context = "[用户说了\"执行\"——必须忠实执行用户命令, 只需在reply中附加天气建议]\n" + context
 
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=1) as pool:
         result = await loop.run_in_executor(pool, fetch_nlp, text, context)
 
     if not result:
-        return
+        # 云端 NLP 失败 → fallback 关键词匹配
+        result = fallback_nlp(text)
+        if not result:
+            return
+        log("NLP", f"云端失败, fallback: action={result.get('action')}")
 
     action = result.get("action", "chat")
     reply = result.get("reply", "")
@@ -419,8 +632,10 @@ async def push_weather(city: str):
     if not data:
         return
 
+    detail = data.get('weather_detail', '')
     log("WEATHER", f"{data['city']}: {data['weather']} {data['low']}~{data['high']}°C "
-                   f"降水{data['rain_pct']}% {data['wind']}")
+                   f"降水{data['rain_pct']}% {data['wind']}" +
+                   (f" | {detail}" if detail else ""))
 
     # cache for suggestion
     latest_weather_data.clear()
@@ -586,7 +801,12 @@ async def handle_connection(ws):
 
             # ── NLP text parsing (device → server → DeepSeek) ──
             elif inner.get("type") == "asr_text" and ws_to_role.get(ws) == "device":
-                asyncio.create_task(handle_asr_text(dev_id, inner.get("text", ""), ws))
+                asyncio.create_task(handle_asr_text(dev_id, inner.get("text", ""),
+                                                    inner.get("force_execute", False), ws))
+
+            # ── 自适应模式云端增强 (device → server → DeepSeek) ──
+            elif inner.get("type") == "adaptive_query" and ws_to_role.get(ws) == "device":
+                asyncio.create_task(handle_adaptive_query(dev_id, inner))
 
             if ws_to_role.get(ws) == "device":
                 # device → all clients

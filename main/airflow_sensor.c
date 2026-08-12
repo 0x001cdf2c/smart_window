@@ -38,14 +38,14 @@ bool airflow_sensor_read(bool *has_airflow)
 {
     if (!has_airflow) return false;
 
-    /* Read 3 times with 1ms gap, take majority to debounce */
+    /* Read 10 times over 50ms, >=30% LOW → wind detected (more sensitive) */
     int low = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 10; i++) {
         if (gpio_get_level(AIRFLOW_GPIO) == 0) low++;
-        if (i < 2) esp_rom_delay_us(1000);
+        esp_rom_delay_us(5000);
     }
 
-    bool wind = (low >= 2);  /* majority vote for LOW = wind */
+    bool wind = (low >= 3);  /* >=3 out of 10 = wind */
     static bool last_wind = false;
     if (wind != last_wind) {
         ESP_LOGI(TAG, "GPIO48 changed: %s → %s",

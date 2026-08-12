@@ -27,6 +27,7 @@
 #include "i2c_bus.h"
 #include "control_algorithm.h"
 #include "wind_scanner.h"
+#include "local_nlp.h"
 #include <time.h>
 #include <mbedtls/base64.h>
 #include "lwip/apps/sntp.h"
@@ -63,7 +64,7 @@ static void on_ui_action(const char *action)
 
     if (strcmp(action, "open") == 0) {
         servo_set_angle(0.0f);
-        control_adaptive_record("open");
+        control_adaptive_record(servo_get_angle());
         if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
@@ -72,7 +73,7 @@ static void on_ui_action(const char *action)
         }
     } else if (strcmp(action, "close") == 0) {
         servo_set_angle(90.0f);
-        control_adaptive_record("close");
+        control_adaptive_record(servo_get_angle());
         if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
@@ -301,54 +302,96 @@ static void on_audio_stream(const int16_t *samples, int count, bool is_end)
              count, is_end, (int)out_len);
 }
 
-/* ── 处理 ASR 返回的文字: 本地匹配开/关窗, 其余发服务端 DeepSeek 回复 ── */
+/* ── 处理 ASR 返回的文字: 本地 NLP 分类器 → 高置信度直接执行, 其余发服务端 DeepSeek ── */
 static void handle_asr_text(const char *text)
 {
     if (!text || strlen(text) == 0) return;
 
     ESP_LOGI(TAG, "[ASR结果] %s", text);
 
-    /* 检测是否包含时间相关词 → 可能是定时命令, 发服务端 NLP */
-    bool has_time = false;
-    if (strstr(text, "点") || strstr(text, "分") || strstr(text, "半") ||
-        strstr(text, "定时") || strstr(text, "后") ||
-        strstr(text, "上午") || strstr(text, "下午") || strstr(text, "中午") ||
-        strstr(text, "早上") || strstr(text, "晚上") || strstr(text, "凌晨") ||
-        strstr(text, "分钟") || strstr(text, "小时") || strstr(text, "帮")) {
-        has_time = true;
-    }
+    nlp_result_t r = local_nlp_classify(text);
 
-    if (!has_time) {
-        /* 本地关键词匹配: 打开/关闭窗帘 → 直接执行 + 播报 */
-        if (strstr(text, "打开") && (strstr(text, "窗帘") || strstr(text, "窗户") || strstr(text, "窗"))) {
-            servo_set_angle(0.0f);
-            control_adaptive_record("open");
-            voice_reply_say("收到，打开窗帘");
-            return;
-        }
-        if (strstr(text, "关闭") && (strstr(text, "窗帘") || strstr(text, "窗户") || strstr(text, "窗"))) {
-            servo_set_angle(90.0f);
-            control_adaptive_record("close");
-            voice_reply_say("收到，关闭窗帘");
-            return;
-        }
-        if (strstr(text, "停止")) {
-            g_auto_running = false;
-            servo_set_mode(SERVO_MODE_MANUAL);
-            voice_reply_say("收到，已停止");
-            return;
-        }
-    }
-
-    /* 非开关指令 / 含时间词 → 发往服务端 NLP */
-    {
+    if (local_nlp_should_use_cloud(&r)) {
+        /* 定时/闲聊/低置信度/非"执行"开窗 → 转发云端 DeepSeek */
         cJSON *pl = cJSON_CreateObject();
         cJSON_AddStringToObject(pl, "text", text);
+        if (r.intent == NLP_INTENT_TIMER) {
+            cJSON_AddBoolToObject(pl, "has_timer", true);
+        }
+        cJSON_AddBoolToObject(pl, "force_execute", r.force_execute);
         char *js = cJSON_PrintUnformatted(pl);
         msg_bus_send("asr_text", js);
         free(js);
         cJSON_Delete(pl);
+        return;
     }
+
+    /* force_execute 或 高置信度本地执行 */
+    ESP_LOGI(TAG, "[NLP本地] intent=%s conf=%.0f%% force=%d",
+             r.intent_name, r.confidence * 100, r.force_execute);
+    switch (r.intent) {
+    case NLP_INTENT_OPEN:
+        servo_set_angle(0.0f);
+        control_adaptive_record(servo_get_angle());
+        voice_reply_say(r.reply);
+        break;
+    case NLP_INTENT_CLOSE:
+        servo_set_angle(90.0f);
+        control_adaptive_record(servo_get_angle());
+        voice_reply_say(r.reply);
+        break;
+    case NLP_INTENT_STOP:
+        g_auto_running = false;
+        servo_set_mode(SERVO_MODE_MANUAL);
+        voice_reply_say(r.reply);
+        break;
+    default:
+        break;
+    }
+}
+
+/* ── 发送自适应摘要到云端大模型, 获取增强预测 ── */
+static void adaptive_send_to_cloud(void)
+{
+    const schedule_plan_t *plan = control_adaptive_get_plan();
+    int rec_cnt = 0;
+    const recent_op_t *recs = control_adaptive_get_recent_ops(&rec_cnt);
+
+    if (!plan || plan->count == 0) return;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "adaptive_query");
+
+    /* 当前传感器 */
+    cJSON_AddNumberToObject(root, "temp", s_last_temp);
+    cJSON_AddNumberToObject(root, "humidity", s_last_humi);
+    cJSON_AddNumberToObject(root, "light", (int)s_last_light);
+
+    /* 最近操作记录 (最多10条) */
+    cJSON *ops = cJSON_AddArrayToObject(root, "recent_ops");
+    for (int i = 0; i < rec_cnt && i < 10; i++) {
+        cJSON *op = cJSON_CreateObject();
+        cJSON_AddStringToObject(op, "time", recs[i].time_str);
+        cJSON_AddNumberToObject(op, "angle", recs[i].angle);
+        cJSON_AddNumberToObject(op, "day_offset", recs[i].day_offset);
+        cJSON_AddItemToArray(ops, op);
+    }
+
+    /* 本地预测计划 */
+    cJSON *preds = cJSON_AddArrayToObject(root, "predictions");
+    for (int i = 0; i < plan->count; i++) {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddStringToObject(p, "time", plan->entries[i].time_str);
+        cJSON_AddNumberToObject(p, "angle", plan->entries[i].angle);
+        cJSON_AddNumberToObject(p, "confidence", plan->entries[i].confidence);
+        cJSON_AddItemToArray(preds, p);
+    }
+
+    char *js = cJSON_PrintUnformatted(root);
+    msg_bus_send("adaptive_query", js);
+    ESP_LOGI(TAG, "[自适应] 已发送摘要到云端");
+    free(js);
+    cJSON_Delete(root);
 }
 
 /* ── 解析并执行从 Web/手机发来的命令 ── */
@@ -399,15 +442,15 @@ static void handle_web_command(const char *json_str)
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(0.0f);
-        voice_reply_say("打开窗帘");
-        control_adaptive_record("open");
+        voice_reply_say("打开窗户");
+        control_adaptive_record(servo_get_angle());
 
     } else if (strcmp(cmd, "close_blinds") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(90.0f);
-        voice_reply_say("关闭窗帘");
-        control_adaptive_record("close");
+        voice_reply_say("关闭窗户");
+        control_adaptive_record(servo_get_angle());
 
     } else if (strcmp(cmd, "rain_expand") == 0) {
         s_rain_manual = true;
@@ -519,6 +562,35 @@ static void handle_web_command(const char *json_str)
             control_timer_remove_one_shot(idx->valueint);
             ESP_LOGI(TAG, "Web: deleted timer idx %d", idx->valueint);
         }
+    } else if (strcmp(cmd, "load_demo") == 0) {
+        cJSON *recs = cJSON_GetObjectItem(root, "records");
+        if (recs && cJSON_IsArray(recs)) {
+            int n = cJSON_GetArraySize(recs);
+            if (n > 100) n = 100;
+            uint8_t *angles = malloc(n);
+            uint8_t *hours  = malloc(n);
+            uint8_t *mins   = malloc(n);
+            if (angles && hours && mins) {
+                for (int i = 0; i < n; i++) {
+                    cJSON *item = cJSON_GetArrayItem(recs, i);
+                    if (item && cJSON_IsArray(item) && cJSON_GetArraySize(item) >= 3) {
+                        angles[i] = (uint8_t)(cJSON_GetArrayItem(item, 0)->valueint);
+                        hours[i]  = (uint8_t)(cJSON_GetArrayItem(item, 1)->valueint);
+                        mins[i]   = (uint8_t)(cJSON_GetArrayItem(item, 2)->valueint);
+                    }
+                }
+                control_adaptive_demo_load(angles, hours, mins, n);
+                control_set_mode(CONTROL_MODE_ADAPTIVE);
+                ESP_LOGI(TAG, "Demo: loaded %d records", n);
+            }
+            free(angles); free(hours); free(mins);
+        }
+
+    } else if (strcmp(cmd, "run_predict") == 0) {
+        control_adaptive_predict_sensor_aware(s_last_temp, s_last_humi, s_last_light);
+        adaptive_send_to_cloud();
+        ESP_LOGI(TAG, "Manual re-predict triggered");
+
     } else if (strcmp(cmd, "natural_boost") == 0) {
         servo_natural_wind_boost(true);
         ESP_LOGI(TAG, "Web: natural boost ON");
@@ -559,10 +631,10 @@ static void handle_web_command(const char *json_str)
         if (act && act->valuestring) {
             if (strcmp(act->valuestring, "open") == 0) {
                 servo_set_angle(0.0f);
-                control_adaptive_record("open");
+                control_adaptive_record(servo_get_angle());
             } else if (strcmp(act->valuestring, "close") == 0) {
                 servo_set_angle(90.0f);
-                control_adaptive_record("close");
+                control_adaptive_record(servo_get_angle());
             } else if (strcmp(act->valuestring, "timer") == 0) {
                 cJSON *tm = cJSON_GetObjectItem(root, "time");
                 cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
@@ -582,6 +654,34 @@ static void handle_web_command(const char *json_str)
         cJSON *text_item = cJSON_GetObjectItem(root, "text");
         if (text_item && text_item->valuestring) {
             voice_reply_say(text_item->valuestring);
+        }
+
+    } else if (strcmp(cmd, "adaptive_plan") == 0) {
+        /* 云端大模型返回增强预测计划 */
+        cJSON *plan_arr = cJSON_GetObjectItem(root, "plan");
+        cJSON *rep = cJSON_GetObjectItem(root, "reply");
+        if (plan_arr && cJSON_IsArray(plan_arr)) {
+            schedule_plan_t *local = (schedule_plan_t *)control_adaptive_get_plan();
+            int n = cJSON_GetArraySize(plan_arr);
+            if (n > SCHEDULE_MAX_ENTRIES) n = SCHEDULE_MAX_ENTRIES;
+            for (int i = 0; i < n; i++) {
+                cJSON *item = cJSON_GetArrayItem(plan_arr, i);
+                if (item) {
+                    cJSON *t = cJSON_GetObjectItem(item, "time");
+                    cJSON *a = cJSON_GetObjectItem(item, "angle");
+                    if (t && t->valuestring && a) {
+                        snprintf(local->entries[i].time_str, sizeof(local->entries[i].time_str),
+                                 "%s", t->valuestring);
+                        local->entries[i].angle = (uint8_t)cJSON_GetNumberValue(a);
+                        local->entries[i].confidence = 90;  /* cloud plan = high confidence */
+                    }
+                }
+            }
+            local->count = n;
+            ESP_LOGI(TAG, "[自适应] 云端计划已应用: %d条", n);
+        }
+        if (rep && rep->valuestring && rep->valuestring[0]) {
+            voice_reply_say(rep->valuestring);
         }
     }
 
@@ -677,6 +777,17 @@ static void sensor_task(void *arg)
 
         /* ── 用户自适应模式: 执行预测计划 ── */
         if (control_get_mode() == CONTROL_MODE_ADAPTIVE) {
+            /* 传感器感知预测: 每5分钟重新计算一次 (串口输出炫酷匹配过程) */
+            static time_t s_last_sensor_predict = 0;
+            time_t t_now = time(NULL);
+            if (t_now - s_last_sensor_predict >= 300) {
+                control_adaptive_predict_sensor_aware(s_last_temp, s_last_humi, s_last_light);
+                s_last_sensor_predict = t_now;
+
+                /* 发送精简摘要给云端大模型, 获取增强预测指令 */
+                adaptive_send_to_cloud();
+            }
+
             const schedule_plan_t *plan = control_adaptive_get_plan();
             if (plan && plan->count > 0) {
                 time_t now = time(NULL);
@@ -686,10 +797,8 @@ static void sensor_task(void *arg)
                 snprintf(now_str, sizeof(now_str), "%02d:%02d", tm.tm_hour, tm.tm_min);
                 for (int i = 0; i < plan->count; i++) {
                     if (strcmp(now_str, plan->entries[i].time_str) == 0) {
-                        if (strcmp(plan->entries[i].action, "open") == 0)
-                            servo_set_angle(0.0f);
-                        else
-                            servo_set_angle(90.0f);
+                        servo_set_angle((float)plan->entries[i].angle);
+                        control_adaptive_record(plan->entries[i].angle);
                     }
                 }
             }
@@ -765,10 +874,13 @@ static void sensor_task(void *arg)
                     snprintf(detail, sizeof(detail), "学习: %d 条预测", plan->count);
                     int off = strlen(pred_left);
                     for (int i = 0; i < plan->count; i++) {
-                        const char *act_name = (strcmp(plan->entries[i].action, "open") == 0) ? "开" : "关";
+                        const char *act_name =
+                            (strcmp(plan->entries[i].action, "open") == 0)  ? "开" :
+                            (strcmp(plan->entries[i].action, "close") == 0) ? "关" : "半";
                         off += snprintf(pred_left + off, sizeof(pred_left) - off,
-                                        "%s %s (%d%%)\n",
+                                        "%s%d %s (%d%%)\n",
                                         act_name,
+                                        plan->entries[i].angle,
                                         plan->entries[i].time_str,
                                         plan->entries[i].confidence);
                     }
@@ -783,10 +895,10 @@ static void sensor_task(void *arg)
                     int off = strlen(recent_right);
                     int show = rec_cnt > 5 ? 5 : rec_cnt;
                     for (int i = 0; i < show && off < (int)sizeof(recent_right) - 16; i++) {
-                        const char *act_name = (strcmp(recs[i].action, "open") == 0) ? "开" : "关";
+                        const char *act_name = recs[i].action;  /* already "开窗"/"关窗"/"半开" */
                         off += snprintf(recent_right + off, sizeof(recent_right) - off,
-                                        "%s %s\n",
-                                        recs[i].time_str, act_name);
+                                        "%s%d %s\n",
+                                        recs[i].time_str, recs[i].angle, act_name);
                     }
                 } else {
                     snprintf(recent_right + strlen(recent_right),
@@ -861,14 +973,15 @@ static void sensor_task(void *arg)
         if (control_get_mode() == CONTROL_MODE_ADAPTIVE) {
             const schedule_plan_t *plan = control_adaptive_get_plan();
             if (plan && plan->count > 0) {
-                char sch[320];
+                char sch[512];
                 int off = snprintf(sch, sizeof(sch), "[");
                 for (int i = 0; i < plan->count; i++) {
                     off += snprintf(sch + off, sizeof(sch) - off,
-                        "%s{\"time\":\"%s\",\"action\":\"%s\",\"confidence\":%d}",
+                        "%s{\"time\":\"%s\",\"action\":\"%s\",\"angle\":%d,\"confidence\":%d}",
                         i > 0 ? "," : "",
                         plan->entries[i].time_str,
                         plan->entries[i].action,
+                        plan->entries[i].angle,
                         plan->entries[i].confidence);
                 }
                 off += snprintf(sch + off, sizeof(sch) - off, "]");

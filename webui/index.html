@@ -77,6 +77,75 @@
     cursor: pointer; transition: all 0.25s; white-space: nowrap;
   }
   .reconnect-btn:hover { background: var(--accent); color: #fff; }
+
+  /* ── Window Tabs ── */
+  .window-tabs {
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .win-tab {
+    flex: 1; min-width: 80px;
+    padding: 12px 10px; border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--card); color: var(--text);
+    font-size: 14px; font-weight: 600;
+    cursor: pointer; text-align: center;
+    transition: all 0.25s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    position: relative;
+  }
+  .win-tab:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(108,92,231,0.1); }
+  .win-tab.active {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(108,92,231,0.04);
+    box-shadow: 0 0 0 3px rgba(108,92,231,0.08);
+  }
+  .win-tab .win-name { font-size: 16px; }
+  .win-tab .win-loc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .win-tab .win-dot {
+    display: inline-block; width: 7px; height: 7px;
+    border-radius: 50%; margin-right: 4px; vertical-align: middle;
+  }
+  .win-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(0,184,148,0.5); }
+  .win-dot.offline { background: #ccc; }
+
+  /* ── Controls Panel ── */
+  .controls-panel { display: block; }
+  .controls-panel.hidden { display: none; }
+  .select-prompt {
+    text-align: center; padding: 40px 20px;
+    color: var(--muted); font-size: 15px;
+    background: var(--card); border-radius: 18px;
+    border: 1px dashed var(--border);
+  }
+  .select-prompt .big-icon { font-size: 48px; display: block; margin-bottom: 12px; }
+
+  /* Master buttons — subdued until clicked */
+  .master-btn {
+    border: 1.5px solid var(--border);
+    border-radius: 14px; padding: 14px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.15s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .master-open {
+    background: #f5f5f8; color: #00b894;
+    border-color: rgba(0,184,148,0.2);
+  }
+  .master-close {
+    background: #f5f5f8; color: #888;
+    border-color: rgba(0,0,0,0.08);
+  }
+  .master-btn:active { transform: scale(0.96); }
+  .master-btn.flash-open {
+    background: #00b894; color: #fff; border-color: #00b894;
+    box-shadow: 0 0 24px rgba(0,184,148,0.5);
+  }
+  .master-btn.flash-close {
+    background: #555; color: #fff; border-color: #555;
+    box-shadow: 0 0 24px rgba(80,80,80,0.4);
+  }
+
   .scan-add-btn {
     padding: 8px 16px; border-radius: 20px;
     border: 1px dashed var(--accent);
@@ -332,7 +401,7 @@
   <div class="header">
     <div class="logo">🏠</div>
     <div>
-      <div class="title">智能窗帘</div>
+      <div class="title">智能窗户</div>
       <div class="subtitle" id="devId">blinds_001</div>
     </div>
     <div class="status-row">
@@ -343,6 +412,35 @@
       </label>
       <button class="reconnect-btn" id="reconnectBtn" onclick="doReconnect()">重新连接</button>
     </div>
+  </div>
+
+  <!-- Window Selector Tabs -->
+  <div class="window-tabs" id="windowTabs">
+    <div class="win-tab" onclick="selectWindow(1)" id="winTab1">
+      <span class="win-dot online"></span>
+      <div class="win-name">窗户 1</div>
+      <div class="win-loc">客厅 · 在线</div>
+    </div>
+    <div class="win-tab" onclick="selectWindow(2)" id="winTab2">
+      <span class="win-dot offline"></span>
+      <div class="win-name">窗户 2</div>
+      <div class="win-loc">未连接</div>
+    </div>
+    <div class="win-tab" onclick="selectWindow(3)" id="winTab3">
+      <span class="win-dot offline"></span>
+      <div class="win-name">窗户 3</div>
+      <div class="win-loc">未连接</div>
+    </div>
+  </div>
+
+  <!-- Master Controls (always visible) -->
+  <div class="commands" style="grid-template-columns: 1fr 1fr; gap: 10px;">
+    <button class="master-btn master-open" id="masterOpenBtn" onclick="masterCmd('open')">
+      <span class="icon">🪟</span> 全部打开
+    </button>
+    <button class="master-btn master-close" id="masterCloseBtn" onclick="masterCmd('close')">
+      <span class="icon">🪟</span> 全部关闭
+    </button>
   </div>
 
   <!-- Camera Stream (via WebSocket relay, works outside LAN) -->
@@ -358,9 +456,18 @@
     </div>
   </div>
 
+  <!-- Select Prompt (shown when no window selected) -->
+  <div class="select-prompt" id="selectPrompt">
+    <span class="big-icon">🪟</span>
+    请选择上方窗户以展开控制面板
+  </div>
+
+  <!-- Controls Panel (hidden until a window is selected) -->
+  <div class="controls-panel hidden" id="controlsPanel">
+
   <!-- Angle Gauge: 360-degree rotation, center-axis slat -->
   <div class="angle-gauge-wrap">
-    <div class="gauge-label">窗帘角度 <span class="auto-badge" id="autoBadge">手动</span></div>
+    <div class="gauge-label">窗户角度 <span class="auto-badge" id="autoBadge">手动</span></div>
     <canvas id="angleGauge" width="320" height="320"></canvas>
     <div class="angle-control-row">
       <button class="angle-mode-btn manual" id="angleModeBtn" onclick="toggleAngleMode()">手动调节</button>
@@ -539,6 +646,27 @@
     </div>
   </div>
 
+  <!-- Adaptive Panel (shown when adaptive mode) -->
+  <div class="weather-card" id="adaptivePanel" style="display:none;">
+    <div class="weather-header">
+      <span class="weather-icon">🧠</span>
+      <div>
+        <div class="weather-city">自适应模式</div>
+        <div class="weather-desc" id="adaptiveDesc">本地学习 + 云端增强</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="cmd-btn" onclick="loadAdaptiveDemo()"
+              style="flex:1;background:#ede7f6;border-color:#b39ddb;color:#5f27cd;min-width:120px;">
+        📊 Demo 30条
+      </button>
+      <button class="cmd-btn" onclick="runAdaptivePredict()"
+              style="flex:1;background:#fff3e0;border-color:#ffcc80;color:#e65100;min-width:120px;">
+        🔮 立即预测
+      </button>
+    </div>
+  </div>
+
   <!-- Timer Settings (shown when timer mode) -->
   <div class="weather-card" id="timerCard" style="display:none;">
     <div class="weather-header">
@@ -592,6 +720,8 @@
   <div class="response-area" id="responseArea">
     <div class="placeholder">等待设备响应...</div>
   </div>
+
+  </div><!-- /.controls-panel -->
 </div>
 
 <script>
@@ -607,6 +737,7 @@ let manualAngle = 0;      // 0..180, 0 = closed/vertical
 let isDragging = false;
 let deviceMode = 'manual'; // synced from device
 let sendQueue = [];
+let selectedWindow = 0; // 0 = none selected
 
 const statusText = document.getElementById('statusText');
 const connectToggle = document.getElementById('connectToggle');
@@ -622,6 +753,68 @@ const angleModeBtn = document.getElementById('angleModeBtn');
 const angleAdjustBtn = document.getElementById('angleAdjustBtn');
 
 let currentAngle = null;
+
+/* ── Window Selection ── */
+function selectWindow(n) {
+  if (selectedWindow === n) {
+    // Deselect
+    selectedWindow = 0;
+    document.querySelectorAll('.win-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('controlsPanel').classList.add('hidden');
+    document.getElementById('selectPrompt').style.display = 'block';
+    if (n === 1) addResponse('system', '已收起窗户1控制面板');
+    return;
+  }
+
+  selectedWindow = n;
+  // Update tab styles
+  document.querySelectorAll('.win-tab').forEach(t => t.classList.remove('active'));
+  const tab = document.getElementById('winTab' + n);
+  if (tab) tab.classList.add('active');
+
+  // Show controls
+  document.getElementById('controlsPanel').classList.remove('hidden');
+  document.getElementById('selectPrompt').style.display = 'none';
+
+  if (n === 1) {
+    addResponse('system', '已展开窗户1（客厅）控制面板 — 已连接');
+    // Ensure WebSocket is connected for window 1
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      autoReconnect = true;
+      connect();
+    }
+  } else {
+    addResponse('system', '窗户' + n + ' 未配置硬件，控制面板仅供参考');
+  }
+
+  // Reset gauge for the window
+  if (n === 1) {
+    drawGauge(currentAngle || 0, angleMode === 'manual');
+  } else {
+    drawGauge(45, false); // default position for simulated windows
+  }
+}
+
+/* ── Master open/close all (ignores window selection) ── */
+function masterCmd(action) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    addResponse('system', '未连接，无法执行全部' + (action === 'open' ? '打开' : '关闭'));
+    return;
+  }
+  const btn = document.getElementById(action === 'open' ? 'masterOpenBtn' : 'masterCloseBtn');
+  const flashClass = action === 'open' ? 'flash-open' : 'flash-close';
+  btn.classList.add(flashClass);
+  setTimeout(() => btn.classList.remove(flashClass), 300);
+
+  const cmd = action === 'open' ? 'open_blinds' : 'close_blinds';
+  const msg = {
+    type: 'send',
+    payload: JSON.stringify({ type: cmd })
+  };
+  ws.send(JSON.stringify(msg));
+  addResponse('sent', '全部' + (action === 'open' ? '打开' : '关闭'));
+  setAutoMode(false);
+}
 
 /* ── Raw angle from touch (0-360°, up=0, CW increasing) ── */
 function rawTouchAngle(e) {
@@ -1106,6 +1299,11 @@ function setAutoMode(on) {
 }
 
 function sendCmd(cmd, params = {}) {
+  // Only window 1 is physically connected
+  if (selectedWindow !== 1) {
+    addResponse('system', '窗户' + selectedWindow + ' 未配置硬件，命令未发送');
+    return;
+  }
   if (cmd === 'auto_mode') setAutoMode(true);
   else if (cmd === 'open_blinds' || cmd === 'close_blinds' || cmd === 'set_temp') setAutoMode(false);
 
@@ -1156,6 +1354,7 @@ function setControlMode(mode) {
   /* Show/hide sub-cards */
   document.getElementById('timerCard').style.display = (mode === 'timer') ? 'block' : 'none';
   document.getElementById('naturalBoostCard').style.display = (mode === 'natural') ? 'block' : 'none';
+  document.getElementById('adaptivePanel').style.display = (mode === 'adaptive') ? 'block' : 'none';
   document.getElementById('scheduleCard').style.display =
     (mode === 'adaptive' || mode === 'timer') ? 'block' : 'none';
 }
@@ -1205,6 +1404,7 @@ function setControlModeUI(mode) {
   }
   document.getElementById('timerCard').style.display = (mode === 'timer') ? 'block' : 'none';
   document.getElementById('naturalBoostCard').style.display = (mode === 'natural') ? 'block' : 'none';
+  document.getElementById('adaptivePanel').style.display = (mode === 'adaptive') ? 'block' : 'none';
   document.getElementById('scheduleCard').style.display =
     (mode === 'adaptive' || mode === 'timer') ? 'block' : 'none';
 }
@@ -1231,14 +1431,20 @@ function updateScheduleCard(plan, source) {
   plan.forEach((e, i) => {
     const timeStr = e.time_str || e.time || '';
     const actionStr = e.action || '';
-    const icon = actionStr === 'open' ? '🟢' : '🔴';
-    const actLabel = actionStr === 'open' ? '开窗' : '关窗';
+    let icon, actLabel;
+    if (actionStr === 'open')  { icon = '🟢'; actLabel = '开窗'; }
+    else if (actionStr === 'close') { icon = '🔴'; actLabel = '关窗'; }
+    else                       { icon = '🟡'; actLabel = '半开'; }
     const conf = e.confidence !== undefined ? e.confidence : null;
+    const angle = e.angle !== undefined ? e.angle : null;
 
     html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg);border-radius:10px;">' +
       '<span>' + icon + '</span>' +
       '<span style="font-weight:600;font-size:14px;">' + escapeHtml(timeStr) + '</span>' +
       '<span style="color:var(--muted);font-size:12px;">' + escapeHtml(actLabel) + '</span>';
+    if (angle !== null) {
+      html += '<span style="font-size:13px;color:var(--accent);font-weight:600;">' + angle + '°</span>';
+    }
     if (conf !== null) {
       const confColor = conf >= 70 ? 'var(--green)' : (conf >= 40 ? '#f9ca24' : 'var(--muted)');
       html += '<span style="margin-left:auto;font-size:12px;color:' + confColor + ';font-weight:600;">' + conf + '%</span>';
@@ -1253,6 +1459,34 @@ function updateScheduleCard(plan, source) {
 function deleteTimer(idx) {
   sendCmd('delete_timer', { index: idx });
 }
+
+// ── Adaptive panel functions ──
+function loadAdaptiveDemo() {
+  const btn = document.querySelector('#adaptivePanel button');
+  const orig = btn.textContent;
+  btn.textContent = '... 加载中';
+  btn.disabled = true;
+
+  // 30条模拟数据: 模拟约4天, 每天早晚开/关窗
+  const demo = [
+    [0, 7,20],[0, 7,35],[0, 8,10],[0, 8,25],
+    [90,15,30],[90,15,45],[90,16,0],[90,16,15],
+    [0, 7,15],[0, 7,30],[0, 8,5],[0, 8,20],
+    [90,15,25],[90,15,40],[90,16,10],[90,16,20],
+    [0, 7,30],[45,8,40],[90,15,50],[90,16,0],
+    [0, 7,25],[0, 8,15],[90,15,20],[90,16,45],
+    [0, 7,10],[0, 8,5],[90,15,30],[90,16,15],
+    [45, 8,30],[90,16,30],
+  ];
+
+  sendCmd('load_demo', { records: demo });
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+}
+
+function runAdaptivePredict() {
+  sendCmd('run_predict', {});
+}
+// ── End adaptive panel ──
 
 function escapeHtml(s) {
   const d = document.createElement('div');
