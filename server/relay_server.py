@@ -176,6 +176,7 @@ NUI_APPKEY     = os.environ.get("NUI_APPKEY", "F1cFX8KM7SWl1UBE")
 LLM_API_KEY  = os.environ.get("LLM_API_KEY", DEEPSEEK_API_KEY)
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
 LLM_MODEL    = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+ADAPTIVE_MODEL = "deepseek-chat"  # 非推理模型, 稳定输出 JSON
 
 # Per-device audio accumulation
 audio_buffers: dict[str, bytearray] = {}
@@ -492,17 +493,17 @@ def fetch_adaptive(user_msg: str) -> dict | None:
     """Call DeepSeek to refine adaptive plan."""
     try:
         resp = requests.post(f"{LLM_BASE_URL}/chat/completions", json={
-            "model": LLM_MODEL,
+            "model": ADAPTIVE_MODEL,
             "messages": [
                 {"role": "system", "content": ADAPTIVE_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "max_tokens": 800,
+            "max_tokens": 600,
             "temperature": 0.5,
         }, headers={
             "Authorization": f"Bearer {LLM_API_KEY}",
             "Content-Type": "application/json",
-        }, timeout=20)
+        }, timeout=45)
         resp.raise_for_status()
         data = resp.json()
         raw = data["choices"][0]["message"]["content"].strip()

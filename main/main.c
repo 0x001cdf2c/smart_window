@@ -353,6 +353,11 @@ static void handle_asr_text(const char *text)
 /* ── 发送自适应摘要到云端大模型, 获取增强预测 ── */
 static void adaptive_send_to_cloud(void)
 {
+    static time_t s_last_send = 0;
+    time_t now = time(NULL);
+    if (now - s_last_send < 10) return;  /* debounce: max once per 10s */
+    s_last_send = now;
+
     const schedule_plan_t *plan = control_adaptive_get_plan();
     int rec_cnt = 0;
     const recent_op_t *recs = control_adaptive_get_recent_ops(&rec_cnt);
