@@ -1256,7 +1256,9 @@ function handleMessage(msg) {
   // ── timer schedule (one-shot voice timers) ──
   if (pl.type === 'timer_schedule') {
     const entries = pl.entries || [];
-    updateScheduleCard(entries, 'timer');
+    if (entries.length > 0) {
+      updateScheduleCard(entries, 'timer');
+    }
     return;
   }
 
