@@ -48,7 +48,7 @@ static float s_last_temp_out = 0.0f;
 static float s_last_humi_out = 0.0f;
 static float s_last_light = 0.0f;
 static int   s_last_smoke = 0;
-static bool  s_last_airflow = false;
+static int   s_last_airflow = 0;    /* 0-100% wind speed from motor/fan on AIN2 */
 static int   s_last_rain = 0;
 static bool  s_rain_manual = false;   /* true = user manually overrode rain shelter */
 
@@ -607,7 +607,7 @@ static void handle_web_command(const char *json_str)
         /* Return current env evaluation */
         char buf[192];
         env_action_t act = control_env_evaluate(
-            s_last_temp, s_last_humi, s_last_light,
+            s_last_temp, s_last_temp_out, s_last_humi, s_last_light,
             (float)s_last_smoke, (float)s_last_rain);
         float target = control_env_target_angle(
             s_last_temp, s_last_humi, s_last_light);
@@ -749,14 +749,13 @@ static void sensor_task(void *arg)
         /* 烟雾/雨水/气流 — 真实传感器读数 */
         {
             int smoke = 0, rain = 0;
-            bool air = false;
             smoke_sensor_read(&smoke);
             rain_sensor_read(&rain);
-            airflow_sensor_read(&air);
+            int air_pct = airflow_sensor_read_pct();
             s_last_smoke   = smoke;
             s_last_rain    = rain;
-            s_last_airflow = air;
-            ESP_LOGI(TAG, "Smoke=%d Rain=%d Airflow=%d", smoke, rain, air);
+            s_last_airflow = air_pct;
+            ESP_LOGI(TAG, "Smoke=%d Rain=%d Airflow=%d%%", smoke, rain, air_pct);
         }
 
         /* 缓存传感器值供命令响应使用 */
@@ -768,7 +767,7 @@ static void sensor_task(void *arg)
 
         /* ── 环境感知模式: 传感器驱动窗户 ── */
         if (control_get_mode() == CONTROL_MODE_ENV) {
-            env_action_t act = control_env_evaluate(t_in, h_in, lux_f,
+            env_action_t act = control_env_evaluate(t_in, t_out, h_in, lux_f,
                                                        (float)s_last_smoke,
                                                        (float)s_last_rain);
             if (act == ENV_ACTION_OPEN) {
@@ -927,13 +926,14 @@ static void sensor_task(void *arg)
             }
             case CONTROL_MODE_NATURAL: {
                 int best = wind_scanner_get_best();
+                int spd = wind_scanner_get_best_speed();
                 int cur = wind_scanner_get_current_angle();
                 if (wind_scanner_is_scanning() && cur >= 0)
                     snprintf(detail, sizeof(detail), "扫描: %d度", cur);
                 else if (wind_scanner_is_scanning())
                     snprintf(detail, sizeof(detail), "扫描中...");
                 else if (best >= 0)
-                    snprintf(detail, sizeof(detail), "风向: %d度", best);
+                    snprintf(detail, sizeof(detail), "最佳: %d度 风速%d%%", best, spd);
                 else
                     snprintf(detail, sizeof(detail), "等待扫描...");
                 break;
@@ -969,8 +969,8 @@ static void sensor_task(void *arg)
         const char *ctrl_mn = control_mode_name(control_get_mode());
         snprintf(buf, sizeof(buf),
             "{\"temp\":%.1f,\"humidity\":%.1f,\"temp_out\":%.1f,\"humidity_out\":%.1f,\"light\":%d,"
-            "\"smoke\":%d,\"rain\":%d,\"airflow\":%s,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
-            t_in, h_in, t_out, h_out, light, s_last_smoke, s_last_rain, s_last_airflow ? "true" : "false",
+            "\"smoke\":%d,\"rain\":%d,\"airflow\":%d,\"angle\":%.1f,\"mode\":\"%s\",\"ctrl_mode\":\"%s\"}",
+            t_in, h_in, t_out, h_out, light, s_last_smoke, s_last_rain, s_last_airflow,
             angle, mode_str, ctrl_mn);
         msg_bus_send("sensor_data", buf);
 

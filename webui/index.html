@@ -1227,7 +1227,8 @@ function handleMessage(msg) {
     }
     if (pl.airflow !== undefined) {
       const afEl = document.getElementById('airflowVal');
-      afEl.textContent = pl.airflow === true || pl.airflow === 'true' ? '有风' : '无风';
+      const v = Number(pl.airflow);
+      afEl.textContent = v > 0 ? v + '%' : '无风';
     }
     if (pl.angle !== undefined) {
       currentAngle = Math.round(Number(pl.angle));

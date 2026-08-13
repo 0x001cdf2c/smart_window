@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>灵窗智控 — 系统架构</title>
+<style>
+:root {
+  --bg: #f8f9fb;
+  --card: #ffffff;
+  --cyan: #0097a7;
+  --blue: #1565c0;
+  --gold: #f57c00;
+  --dim: #607d8b;
+  --text: #1a1a2e;
+  --border: #dde4ed;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:var(--bg);
+  font-family:'Segoe UI','Microsoft YaHei',sans-serif;
+  color:var(--text);
+}
+
+/* 淡网格 */
+.grid-bg{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:
+    linear-gradient(rgba(0,0,0,0.03) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,0,0,0.03) 1px,transparent 1px);
+  background-size:40px 40px;
+}
+
+.wrap{position:relative;z-index:1;max-width:860px;margin:0 auto;padding:20px 16px;}
+
+/* 标题 */
+.header{text-align:center;margin-bottom:14px;}
+.header h1{
+  font-size:88px;font-weight:900;letter-spacing:14px;line-height:1;
+  background:linear-gradient(135deg,#1565c0 0%,#0097a7 50%,#00bcd4 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.header .en{font-size:18px;color:var(--cyan);letter-spacing:14px;margin-top:2px;}
+
+.section{margin-bottom:10px;}
+.section-tag{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:17px;font-weight:700;color:var(--cyan);letter-spacing:5px;margin-bottom:6px;
+}
+.section-tag::before{content:'';width:8px;height:8px;background:var(--cyan);border-radius:2px;}
+.section-tag::after{content:'';flex:1;height:0.5px;background:linear-gradient(90deg,rgba(0,151,167,0.3),transparent);}
+
+/* 主板 */
+.board{
+  border:0.5px solid var(--border);
+  border-radius:12px;padding:14px 20px 12px;
+  background:var(--card);
+  box-shadow:0 1px 4px rgba(0,0,0,0.04);
+  position:relative;overflow:hidden;
+}
+.board-title{
+  font-size:26px;font-weight:700;color:var(--text);
+  display:flex;align-items:center;gap:10px;margin-bottom:10px;
+}
+.board-title .chip{
+  font-size:14px;padding:2px 14px;border-radius:20px;
+  background:rgba(0,151,167,0.06);border:0.5px solid rgba(0,151,167,0.25);color:var(--cyan);
+}
+
+.cols4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.block{
+  background:var(--card);border:0.5px solid var(--border);
+  border-radius:10px;padding:12px 14px;
+  transition:all 0.2s;
+}
+.block:hover{border-color:var(--cyan);box-shadow:0 2px 12px rgba(0,151,167,0.06);}
+.block h3{font-size:22px;color:var(--cyan);margin-bottom:6px;}
+.block p{font-size:17px;color:var(--dim);line-height:1.5;}
+
+.bar-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.bar{
+  background:rgba(0,151,167,0.02);border:0.5px solid var(--border);
+  border-radius:8px;padding:10px 16px;
+}
+.bar h4{font-size:19px;color:var(--cyan);margin-bottom:4px;}
+.bar .code{font-size:17px;color:var(--dim);font-family:'Cascadia Code',Consolas,monospace;line-height:1.5;}
+
+.arrow{
+  display:flex;align-items:center;gap:8px;padding:2px 0;color:var(--blue);
+  font-size:15px;font-weight:600;letter-spacing:3px;
+}
+.arrow .line{flex:1;height:1px;background:linear-gradient(90deg,var(--cyan),transparent);position:relative;}
+.arrow .line::after{
+  content:'';position:absolute;right:-5px;top:-4px;
+  border:5px solid transparent;border-left-color:var(--blue);
+}
+
+/* 中层 */
+.mid{display:grid;grid-template-columns:140px 1fr;gap:10px;
+  border:0.5px solid var(--border);border-radius:12px;
+  padding:12px;background:var(--card);
+}
+.c6box{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(0,151,167,0.03);border:0.5px solid var(--border);border-radius:10px;
+  padding:12px;text-align:center;gap:4px;
+}
+.c6box .icon{font-size:40px;}
+.c6box .name{font-size:22px;font-weight:700;color:var(--cyan);}
+.c6box .sub{font-size:15px;color:var(--dim);line-height:1.4;}
+
+.cloud3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.svc{
+  background:var(--card);border:0.5px solid var(--border);
+  border-radius:10px;padding:12px;text-align:center;transition:all 0.2s;
+}
+.svc:hover{border-color:var(--gold);box-shadow:0 2px 12px rgba(245,124,0,0.06);}
+.svc .svc-icon{font-size:34px;margin-bottom:2px;}
+.svc .svc-name{font-size:20px;font-weight:700;color:var(--gold);}
+.svc .svc-api{font-size:15px;color:var(--dim);margin-top:2px;}
+
+/* AI */
+.ai-box{
+  border:1px solid rgba(245,124,0,0.3);border-radius:14px;
+  padding:16px 22px;position:relative;
+  background:var(--card);
+  box-shadow:0 1px 8px rgba(245,124,0,0.04);
+}
+.ai-label{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.ai-label .dot{
+  width:12px;height:12px;border-radius:50%;background:var(--gold);
+  animation:pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:0.5;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+.ai-label span{font-size:26px;font-weight:700;color:var(--gold);letter-spacing:3px;}
+
+.flow3{display:flex;align-items:center;gap:0;margin-bottom:10px;}
+.flow3 .step{
+  flex:1;background:rgba(0,151,167,0.02);border:0.5px solid var(--border);
+  border-radius:10px;padding:14px 16px;text-align:center;
+}
+.flow3 .step .num{font-size:13px;color:var(--blue);letter-spacing:3px;}
+.flow3 .step .txt{font-size:22px;font-weight:700;color:var(--text);margin:4px 0 2px;}
+.flow3 .step .sub{font-size:17px;color:var(--dim);}
+.flow3 .arr{font-size:38px;color:var(--cyan);padding:0 10px;flex-shrink:0;}
+.flow3 .json-box{
+  flex:1;border:1px solid var(--gold);border-radius:10px;padding:14px 16px;
+  background:rgba(245,124,0,0.02);text-align:center;
+}
+.json-box .jh{font-size:14px;color:var(--gold);letter-spacing:2px;margin-bottom:4px;}
+.json-box .jc{font-size:19px;color:var(--text);font-family:'Cascadia Code',Consolas,monospace;line-height:1.5;}
+
+.result3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+.result3 div{
+  border:0.5px solid var(--border);border-radius:8px;padding:10px 12px;
+  text-align:center;font-size:19px;color:var(--dim);
+}
+.result3 div b{color:var(--cyan);}
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+
+<div class="wrap">
+
+  <div class="header">
+    <h1>灵 窗 智 控</h1>
+    <div class="en">SMART LOUVER</div>
+  </div>
+
+  <!-- 主控层 -->
+  <div class="section">
+    <div class="section-tag">主控层 — ESP32-P4</div>
+    <div class="board">
+      <div class="board-title">
+        ESP32-P4 智能控制器
+        <span class="chip">400 MHz</span>
+        <span class="chip">32 MB</span>
+      </div>
+      <div class="cols4">
+        <div class="block">
+          <h3>传感器</h3>
+          <p>SHT3x×2<br>BH1750<br>ADS1115</p>
+        </div>
+        <div class="block">
+          <h3>执行器</h3>
+          <p>6 路舵机<br>窗帘 + 雨棚<br>MCPWM</p>
+        </div>
+        <div class="block">
+          <h3>交互</h3>
+          <p>7 寸触屏<br>LVGL UI<br>4000+ 中文</p>
+        </div>
+        <div class="block">
+          <h3>算法</h3>
+          <p>三层决策<br>本地 NLP<br>自然风扫描</p>
+        </div>
+      </div>
+      <div class="bar-row">
+        <div class="bar">
+          <h4>语音</h4>
+          <div class="code">MIC → <b style="color:#0097a7">WakeNet9</b> → <b style="color:#0097a7">MultiNet7</b> → TTS</div>
+        </div>
+        <div class="bar">
+          <h4>总线</h4>
+          <div class="code">WebSocket ↔ 传感器 ↔ 算法 ↔ 舵机</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 箭头 -->
+  <div class="arrow"><span class="line"></span> SDIO</div>
+
+  <!-- 通信 + 云端 -->
+  <div class="section">
+    <div class="section-tag">通信 + 云端</div>
+    <div class="mid">
+      <div class="c6box">
+        <div class="icon">📶</div>
+        <div class="name">C6</div>
+        <div class="sub">WiFi 6<br>SDIO</div>
+      </div>
+      <div class="cloud3">
+        <div class="svc">
+          <div class="svc-icon">☁</div>
+          <div class="svc-name">阿里云 NUI</div>
+          <div class="svc-api">实时语音识别</div>
+        </div>
+        <div class="svc">
+          <div class="svc-icon">🤖</div>
+          <div class="svc-name">DeepSeek</div>
+          <div class="svc-api">语义理解</div>
+        </div>
+        <div class="svc">
+          <div class="svc-icon">🌤</div>
+          <div class="svc-name">Open-Meteo</div>
+          <div class="svc-api">天气预报</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 箭头 -->
+  <div class="arrow"><span class="line"></span> JSON 指令</div>
+
+  <!-- AI -->
+  <div class="section">
+    <div class="section-tag">核心 — 大模型直接控制设备</div>
+    <div class="ai-box">
+      <div class="ai-label">
+        <div class="dot"></div>
+        <span>不只是聊天，更是控制中枢</span>
+      </div>
+
+      <div class="flow3">
+        <div class="step">
+          <div class="num">STEP 1</div>
+          <div class="txt">语音输入</div>
+          <div class="sub">"下午三点开窗"</div>
+        </div>
+        <div class="arr">▸</div>
+        <div class="step">
+          <div class="num">STEP 2</div>
+          <div class="txt">DeepSeek 理解</div>
+          <div class="sub">意图 + 实体抽取</div>
+        </div>
+        <div class="arr">▸</div>
+        <div class="json-box">
+          <div class="jh">★ 控制指令</div>
+          <div class="jc">
+            { time: "15:00"<br>
+            &nbsp;&nbsp;cmd: "open" }
+          </div>
+        </div>
+      </div>
+
+      <div class="result3">
+        <div>→ <b>ESP32</b> 创建定时</div>
+        <div>→ <b>屏幕</b> 实时同步</div>
+        <div>→ <b>舵机</b> 自动执行</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

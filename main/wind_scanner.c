@@ -1,4 +1,5 @@
 #include "wind_scanner.h"
+#include "airflow_sensor.h"
 #include "driver/gpio.h"
 #include "driver/rmt_tx.h"
 #include "esp_log.h"
@@ -9,7 +10,6 @@
 static const char *TAG = "WIND_SCAN";
 
 #define SCAN_SERVO_GPIO     GPIO_NUM_4
-#define WIND_SENSOR_GPIO    GPIO_NUM_48
 #define SWEEP_DELAY_MS      15
 #define SERVO_PERIOD_US     20000
 #define PULSE_MIN_US        500
@@ -25,6 +25,7 @@ typedef enum {
 static bool                s_scanning = false;
 static bool                s_new_result = false;
 static int                 s_best_angle = -1;
+static int                 s_best_speed = 0;     /* wind speed 0-100 at best angle */
 static int                 s_current_angle = -1;
 static SemaphoreHandle_t   s_mutex = NULL;
 static TaskHandle_t        s_task = NULL;
@@ -40,8 +41,6 @@ static uint32_t degree_to_pulse(int degree)
     return PULSE_MIN_US + (PULSE_MAX_US - PULSE_MIN_US) * degree / 180;
 }
 
-/* Send a continuous servo signal at the given angle.
-   Call again to change angle; call servo_stop() to cut power. */
 static void servo_start(int degree)
 {
     uint32_t pulse_us = degree_to_pulse(degree);
@@ -66,8 +65,6 @@ static void servo_start(int degree)
         return;
     }
     s_rmt_active = true;
-
-    ESP_LOGI(TAG, "Servo -> %d deg  pulse=%lu us", (int)degree, (unsigned long)pulse_us);
 }
 
 static void servo_stop(void)
@@ -79,34 +76,30 @@ static void servo_stop(void)
     ESP_LOGI(TAG, "Servo stopped");
 }
 
-static bool read_wind(void)
-{
-    return (gpio_get_level(WIND_SENSOR_GPIO) == 0);
-}
-
 static void scanner_task(void *arg)
 {
-    int wind_hits[181] = {0};
-    int wind_total[181] = {0};
+    int wind_acc[181] = {0};     /* accumulated wind 0-100% */
+    int wind_samples[181] = {0}; /* sample count per angle */
 
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         ESP_LOGI(TAG, "Scanner woke, starting sweep...");
 
         for (int i = 0; i <= 180; i++) {
-            wind_hits[i] = 0;
-            wind_total[i] = 0;
+            wind_acc[i] = 0;
+            wind_samples[i] = 0;
         }
 
         int deg = 90;
         sweep_phase_t phase = PHASE_90_TO_180;
         servo_start(90);
-        ESP_LOGI(TAG, "Scan start: 90→180→0→90");
+        ESP_LOGI(TAG, "Scan start: 90→180→0→90 (analog wind sensor)");
 
         while (phase != PHASE_IDLE) {
             if (deg >= 0 && deg <= 180) {
-                wind_total[deg]++;
-                if (read_wind()) wind_hits[deg]++;
+                int spd = airflow_sensor_read_pct();
+                wind_acc[deg] += spd;
+                wind_samples[deg]++;
             }
 
             switch (phase) {
@@ -140,24 +133,29 @@ static void scanner_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(200));
         servo_stop();
 
+        /* Find angle with max average wind speed */
         int best = 150;
-        int best_hits = 0;
+        int best_avg = 0;
         for (int i = 0; i <= 180; i++) {
-            if (wind_hits[i] > best_hits) {
-                best_hits = wind_hits[i];
-                best = i;
+            if (wind_samples[i] > 0) {
+                int avg = wind_acc[i] / wind_samples[i];
+                if (avg > best_avg) {
+                    best_avg = avg;
+                    best = i;
+                }
             }
         }
 
         if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
         s_best_angle = best;
+        s_best_speed = best_avg;
         s_current_angle = -1;
         s_new_result = true;
         s_scanning = false;
         if (s_mutex) xSemaphoreGive(s_mutex);
 
-        ESP_LOGI(TAG, "Scan done: best=%d° (hits=%d/%d)", best,
-                 best_hits, best_hits > 0 ? wind_total[best] : 0);
+        ESP_LOGI(TAG, "Scan done: best=%d° speed=%d%% (samples=%d)", best,
+                 best_avg, wind_samples[best]);
     }
 }
 
@@ -194,7 +192,6 @@ bool wind_scanner_init(void)
         return false;
     }
 
-    /* Quick centring pulses, then stop — don't hold position when idle */
     for (int i = 0; i < 5; i++) {
         servo_start(90);
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -203,8 +200,8 @@ bool wind_scanner_init(void)
 
     xTaskCreate(scanner_task, "wind_scan", 4096, NULL, 5, &s_task);
 
-    ESP_LOGI(TAG, "Wind scanner ready (RMT GPIO%u, sensor GPIO%u, init=90°)",
-             SCAN_SERVO_GPIO, WIND_SENSOR_GPIO);
+    ESP_LOGI(TAG, "Wind scanner ready (RMT GPIO%u, analog wind via ADS1115 AIN2)",
+             SCAN_SERVO_GPIO);
     return true;
 }
 
@@ -241,6 +238,16 @@ int wind_scanner_get_best(void)
     best = s_best_angle;
     xSemaphoreGive(s_mutex);
     return best;
+}
+
+int wind_scanner_get_best_speed(void)
+{
+    int spd = 0;
+    if (!s_mutex) return spd;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    spd = s_best_speed;
+    xSemaphoreGive(s_mutex);
+    return spd;
 }
 
 bool wind_scanner_try_apply(int *best_angle)

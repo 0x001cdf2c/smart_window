@@ -68,7 +68,7 @@ bool ads1115_init(void)
     }
 
     s_ready = true;
-    ESP_LOGI(TAG, "ADS1115 ready at 0x%02X (AIN0=rain, AIN1=smoke)", ADS1115_ADDR);
+    ESP_LOGI(TAG, "ADS1115 ready at 0x%02X (AIN0=rain, AIN1=smoke, AIN2=airflow)", ADS1115_ADDR);
     return true;
 }
 

@@ -557,11 +557,13 @@ void ui_update_rain(int rain)
     }
 }
 
-void ui_update_airflow(bool has_airflow)
+void ui_update_airflow(int wind_pct)
 {
     if (g_lbl_airflow) {
-        lv_label_set_text(g_lbl_airflow, has_airflow ? "有风" : "无风");
-        lv_obj_set_style_text_color(g_lbl_airflow, has_airflow ? C_BLUE : C_MUTED, 0);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d%%", wind_pct);
+        lv_label_set_text(g_lbl_airflow, wind_pct > 0 ? buf : "无风");
+        lv_obj_set_style_text_color(g_lbl_airflow, wind_pct > 0 ? C_BLUE : C_MUTED, 0);
     }
 }
 

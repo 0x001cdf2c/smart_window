@@ -1,57 +1,70 @@
 #include "airflow_sensor.h"
-#include "driver/gpio.h"
+#include "adc_ads1115.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 
 static const char *TAG = "AIRFLOW";
 
-#define AIRFLOW_GPIO GPIO_NUM_48
+#define AIRFLOW_ADC_CHANNEL  2       /* ADS1115 AIN2 */
+#define AIRFLOW_THRESHOLD    30      /* ~3.75mV, below this = no wind */
+#define AIRFLOW_RAW_MAX      3000    /* ~375mV = 100% wind */
+
+static bool s_ready = false;
+static int16_t s_last_raw = 0;
 
 bool airflow_sensor_init(void)
 {
-    /* No internal pulls — rely on sensor's own output driver.
-       Many airflow sensor modules have built-in pull-ups and
-       adding the ESP internal ~45k pull-up can create a divider
-       that prevents the pin from crossing the logic threshold. */
-    gpio_config_t cfg = {
-        .pin_bit_mask = BIT64(AIRFLOW_GPIO),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&cfg);
-
-    /* Rapid-poll for 100ms at boot to catch the initial state */
-    int high_cnt = 0, low_cnt = 0;
-    int64_t start = esp_timer_get_time();
-    while (esp_timer_get_time() - start < 100000) {
-        if (gpio_get_level(AIRFLOW_GPIO)) high_cnt++; else low_cnt++;
-    }
-    ESP_LOGI(TAG, "GPIO48 boot scan: HIGH=%d LOW=%d → %s",
-             high_cnt, low_cnt, low_cnt > 0 ? "有风" : "无风");
-
+    s_ready = true;
+    ESP_LOGI(TAG, "Airflow ready (ADS1115 AIN2, threshold=%d, max=%d)",
+             AIRFLOW_THRESHOLD, AIRFLOW_RAW_MAX);
     return true;
 }
 
 bool airflow_sensor_read(bool *has_airflow)
 {
-    if (!has_airflow) return false;
+    if (!s_ready || !has_airflow) return false;
 
-    /* Read 10 times over 50ms, >=30% LOW → wind detected (more sensitive) */
-    int low = 0;
-    for (int i = 0; i < 10; i++) {
-        if (gpio_get_level(AIRFLOW_GPIO) == 0) low++;
-        esp_rom_delay_us(5000);
+    /* 多次采样取最大值 (马达输出电压可能波动) */
+    int16_t best = 0;
+    for (int i = 0; i < 5; i++) {
+        int16_t raw = 0;
+        if (ads1115_read_channel(AIRFLOW_ADC_CHANNEL, &raw)) {
+            if (raw < 0) raw = 0;
+            if (raw > best) best = raw;
+        }
+        esp_rom_delay_us(2000);
     }
 
-    bool wind = (low >= 3);  /* >=3 out of 10 = wind */
-    static bool last_wind = false;
-    if (wind != last_wind) {
-        ESP_LOGI(TAG, "GPIO48 changed: %s → %s",
-                 last_wind ? "有风" : "无风", wind ? "有风" : "无风");
-        last_wind = wind;
-    }
+    s_last_raw = best;
+    bool wind = (best >= AIRFLOW_THRESHOLD);
+    int pct = best * 100 / AIRFLOW_RAW_MAX;
+    if (pct > 100) pct = 100;
+
+    /* 每次都打印, 方便校准阈值 */
+    ESP_LOGI(TAG, "AIN2 raw=%d pct=%d%% → %s", (int)best, pct,
+             wind ? "有风" : "无风");
+
     *has_airflow = wind;
     return true;
+}
+
+int16_t airflow_sensor_read_raw(void)
+{
+    int16_t raw = 0;
+    ads1115_read_channel(AIRFLOW_ADC_CHANNEL, &raw);
+    if (raw < 0) raw = 0;
+    s_last_raw = raw;
+    return raw;
+}
+
+int airflow_sensor_read_pct(void)
+{
+    int16_t raw = 0;
+    if (!ads1115_read_channel(AIRFLOW_ADC_CHANNEL, &raw)) return 0;
+    if (raw < 0) raw = 0;
+    s_last_raw = raw;
+
+    int pct = (int)raw * 100 / AIRFLOW_RAW_MAX;
+    if (pct > 100) pct = 100;
+    ESP_LOGI(TAG, "AIN2 raw=%d → %d%%", (int)raw, pct);
+    return pct;
 }

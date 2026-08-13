@@ -81,7 +81,9 @@ esp_err_t servo_init(const int gpios[SERVO_COUNT])
             int idx = op * CH_PER_OP + ch;
             s_gpios[idx] = gpios[idx];
 
-            mcpwm_comparator_config_t cmp_cfg = {};
+            mcpwm_comparator_config_t cmp_cfg = {
+                .flags.update_cmp_on_tez = true,
+            };
             ret = mcpwm_new_comparator(s_opers[op], &cmp_cfg, &s_cmprs[idx]);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "MCPWM new comparator %d failed", idx);
@@ -234,8 +236,8 @@ void servo_natural_wind_boost(bool enable)
 #define RAIN_SHELTER_SPEED_DELAY_MS  40   /* 每步延时, 控制旋转速度 */
 #define RAIN_SHELTER_ANGLE_STEP      2.0f  /* 每步角度增量 */
 
-static bool s_rain_expanded = false;
-static float s_rain_angle = 90.0f;  /* 雨棚当前角度, 初始90° */
+static bool s_rain_expanded = true;   /* 初始90°=展开, 与 servo_init 初始角一致 */
+static float s_rain_angle = 90.0f;    /* 雨棚当前角度, 初始90° */
 
 static void rain_shelter_move_to(float target_angle)
 {
@@ -272,6 +274,10 @@ static void rain_shelter_move_to(float target_angle)
 void servo_rain_shelter_set(bool expand)
 {
     if (!s_initialized) return;
+
+    /* 状态未变则跳过 — 雨棚自动控制在每个传感器周期都会被调用,
+     * 若每次都重跑开合动画, 切模式/传感器抖动时就会多余地开合一次 */
+    if (expand == s_rain_expanded) return;
 
     /* expand=展开(90°), collapse=收起(135°) */
     float target = expand ? 90.0f : 135.0f;

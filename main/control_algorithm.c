@@ -157,11 +157,12 @@ void control_set_mode(control_mode_t mode)
  * 环境感知模式 — 传感器驱动的开关窗决策
  *
  * 参数:
- *   temp    室内温度 (°C)
+ *   temp     室内温度 (°C)
+ *   temp_out 室外温度 (°C)
  *   humidity 室内湿度 (%)
- *   light   室内光照 (lux)
- *   smoke   烟雾浓度 (模拟量, ADC 原始值)
- *   rain    雨水强度 (0-100%)
+ *   light    室内光照 (lux)
+ *   smoke    烟雾浓度 (模拟量, ADC 原始值)
+ *   rain     雨水强度 (0-100%)
  *
  * 返回:
  *   ENV_ACTION_CLOSE  — 关闭百叶窗
@@ -170,42 +171,55 @@ void control_set_mode(control_mode_t mode)
  *
  * 决策层次:
  *   1. 安全优先 — 烟雾 / 雨水触发立即关闭, 跳过后续判断
- *   2. 粗筛     — 极端条件快速触发 (高温 / 高湿 / 强光 / 极暗)
- *   3. 投票     — 温和条件下综合多项传感器加权投票
+ *   2. 强制开窗 — 高温闷热 / 高湿防霉 触发立即打开
+ *   3. 温差     — 空调场景模拟 (室内温度由空调维持时关窗保持空调效果)
+ *   4. 粗筛     — 极端条件快速触发 (高温 / 高湿 / 强光 / 极暗)
+ *   5. 加权投票 — 温和条件下多因素加权评分决定开/关
  */
 
-env_action_t control_env_evaluate(float temp, float humidity, float light,
+env_action_t control_env_evaluate(float temp, float temp_out,
+                                   float humidity, float light,
                                    float smoke, float rain)
 {
     /*-----------------------------------------
-    此函数只关注窗户应该变大还是变小，返回两个值之一
+    此函数只关注窗户应该变大还是变小，返回三个值之一
     ------------------------------------------*/
 
-    /* 第一层: 安全优先 — 烟雾或雨水超标立即关闭*/
+    /* 第一层: 安全优先 — 烟雾或雨水超标立即关闭 */
     if (smoke > 15.0f)  return ENV_ACTION_CLOSE;  /* 烟雾浓度超标, 关窗防护 */
     if (rain > 50.0f)   return ENV_ACTION_CLOSE;  /* 雨水强度 > 50%, 关窗防水 */
 
-    /* 第二层: 粗筛 — 极端条件快速判断 任一条件独立触发, reasons 仅用于判断是否有极端情况*/
+    float dt = temp - temp_out;   /* dt > 0 = 室外更凉, dt < 0 = 室外更热 */
+
+    /* 第二层: 强制开窗 — 极端通风需求, 优先于空调关窗 */
+    if (temp > 30.0f && dt > 3.0f)  return ENV_ACTION_OPEN;   /* 高温闷热 + 室外更凉 → 散热通风 */
+    if (humidity > 85.0f)           return ENV_ACTION_OPEN;   /* 高湿防霉 → 开窗除湿 */
+
+    /* 第三层: 空调场景 — 关窗保持空调效果 */
+    if (temp < 25.0f && dt < -3.0f)  return ENV_ACTION_CLOSE;  /* 室内凉 + 室外更热 → 关窗隔热 (制冷) */
+    if (temp > 20.0f && dt > 3.0f)   return ENV_ACTION_CLOSE;  /* 室内暖 + 室外更冷 → 关窗保温 (制热) */
+
+    /* 第四层: 粗筛 — 极端条件 gate, 任一命中才进入投票, 否则维持现状 */
     int reasons = 0;
-    if (temp > 30.0f)      reasons++;  /* 高温 (> 30°C) → 倾向于开窗通风 */
-    if (humidity > 75.0f)  reasons++;  /* 高湿 (> 75%)  → 倾向于开窗除湿 */
-    if (light > 40000.0f)  reasons++;  /* 强光 (> 40k)  → 倾向于关窗遮光 */
-    if (light < 300.0f)    reasons++;  /* 极暗 (< 300)  → 倾向于开窗采光 */
-    if (reasons == 0) return ENV_ACTION_NONE;  /* 无极端条件, 跳过 */
+    if (temp > 30.0f)      reasons++;  /* 高温 */
+    if (humidity > 75.0f)  reasons++;  /* 高湿 */
+    if (light > 40000.0f)  reasons++;  /* 强光 */
+    if (light < 300.0f)    reasons++;  /* 极暗 */
+    if (reasons == 0) return ENV_ACTION_NONE;
 
-    /* 第三层: 投票 — 温和条件下综合判断 使用较宽松的阈值, 多因素加权投票决定开/关 */
-    int open_reasons = 0, close_reasons = 0;
+    /* 第五层: 加权投票 — 温和条件下多因素加权评分 */
+    int open_score = 0, close_score = 0;
 
-    if (temp > 28.0f)       open_reasons++;   /* 偏热 → 开窗 */
-    if (humidity > 70.0f)   open_reasons++;   /* 偏湿 → 开窗 */
-    if (light < 500.0f)     open_reasons++;   /* 偏暗 → 开窗采光 */
+    if (temp > 28.0f)       open_score += 2;   /* 偏热 → 开窗 (权重2) */
+    if (humidity > 70.0f)   open_score += 2;   /* 偏湿 → 开窗 (权重2) */
+    if (light < 500.0f)     open_score += 1;   /* 偏暗 → 开窗采光 (权重1) */
 
-    if (light > 35000.0f)   close_reasons++;  /* 偏亮 → 关窗遮光 */
-    if (temp < 10.0f)       close_reasons++;  /* 偏冷 → 关窗保温 */
+    if (light > 35000.0f)   close_score += 3;  /* 偏亮 → 关窗遮光 (权重3) */
+    if (temp < 10.0f)       close_score += 2;  /* 偏冷 → 关窗保温 (权重2) */
 
-    if (open_reasons > close_reasons)  return ENV_ACTION_OPEN;
-    if (close_reasons > open_reasons)  return ENV_ACTION_CLOSE;
-    return ENV_ACTION_NONE;  /* 平票, 维持现状 */
+    if (open_score > close_score)  return ENV_ACTION_OPEN;
+    if (close_score > open_score)  return ENV_ACTION_CLOSE;
+    return ENV_ACTION_NONE;  /* 平分, 维持现状 */
 }
 
 /*

@@ -17,5 +17,8 @@ int  wind_scanner_get_current_angle(void);
 /* Last scan's best angle, or -1 if no scan completed */
 int  wind_scanner_get_best(void);
 
+/* Wind speed 0-100 at the best angle */
+int  wind_scanner_get_best_speed(void);
+
 /* Non-blocking: returns true if new result available, writes to *best_angle */
 bool wind_scanner_try_apply(int *best_angle);
