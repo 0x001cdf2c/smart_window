@@ -192,21 +192,21 @@ servo_mode_t servo_get_mode(void)
 
 /* ── 自然风模式: 仅舵机21/23 (idx=1,3) 转动, 20/22 保持0°放平 ── */
 #define NATURAL_WIND_BOOST_FRAC  0.4f   /* 送风时20/22向配对舵机方向移动的比例 */
+#define NATURAL_WIND_MIN_ANGLE   30.0f  /* 自然风转角下限: 只覆盖 120° */
+#define NATURAL_WIND_MAX_ANGLE   150.0f /* 自然风转角上限 */
+#define NATURAL_WIND_ANGLE_STEP      1.0f /* 每步角度增量(度), 越小越平滑 */
+#define NATURAL_WIND_SPEED_DELAY_MS  167  /* 每步延时(ms): 120°约20秒转完 */
 
-static float s_natural_wind_angle = 150.0f;
+static float s_natural_wind_angle  = 150.0f;  /* 目标角度 */
+static float s_natural_wind_current = 150.0f; /* 当前实际角度(动画) */
 static bool  s_natural_boost = false;
 
-esp_err_t servo_set_natural_wind_angle(float angle_deg)
+/* 把一组角度直接写到舵机上: 21/23 转到 angle_deg, 20/22 放平或送风 */
+static void natural_wind_apply(float angle_deg)
 {
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
-
-    angle_deg = clamp_angle(angle_deg);
-    s_natural_wind_angle = angle_deg;
-
     static const int active[] = {1, 3};
     static const int flat[]   = {0, 2};
 
-    /* 20/22: boost 开启时向配对舵机方向聚拢, 否则放平 */
     float boost_angle = s_natural_boost ? (angle_deg * NATURAL_WIND_BOOST_FRAC) : 0.0f;
     for (int i = 0; i < 2; i++) {
         float a = s_inverted[flat[i]] ? (180.0f - boost_angle) : boost_angle;
@@ -216,9 +216,31 @@ esp_err_t servo_set_natural_wind_angle(float angle_deg)
         float a = s_inverted[active[i]] ? (180.0f - angle_deg) : angle_deg;
         mcpwm_comparator_set_compare_value(s_cmprs[active[i]], angle_to_pulse_us(a));
     }
+}
 
-    ESP_LOGI(TAG, "Natural-wind -> %.1f deg (21/23), 20/22=%.1f %s",
-             angle_deg, boost_angle, s_natural_boost ? "boost" : "flat");
+esp_err_t servo_set_natural_wind_angle(float angle_deg)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+
+    /* 限制在 30°~150° (120° 范围), 而非全 0°~180° */
+    if (angle_deg < NATURAL_WIND_MIN_ANGLE) angle_deg = NATURAL_WIND_MIN_ANGLE;
+    if (angle_deg > NATURAL_WIND_MAX_ANGLE) angle_deg = NATURAL_WIND_MAX_ANGLE;
+    s_natural_wind_angle = angle_deg;
+
+    /* 从当前角逐步移动到目标角, 降低舵机转速 */
+    while (s_natural_wind_current != angle_deg) {
+        if (s_natural_wind_current < angle_deg) {
+            s_natural_wind_current += NATURAL_WIND_ANGLE_STEP;
+            if (s_natural_wind_current > angle_deg) s_natural_wind_current = angle_deg;
+        } else {
+            s_natural_wind_current -= NATURAL_WIND_ANGLE_STEP;
+            if (s_natural_wind_current < angle_deg) s_natural_wind_current = angle_deg;
+        }
+        natural_wind_apply(s_natural_wind_current);
+        vTaskDelay(pdMS_TO_TICKS(NATURAL_WIND_SPEED_DELAY_MS));
+    }
+
+    ESP_LOGI(TAG, "Natural-wind -> %.1f deg (21/23)", s_natural_wind_current);
     return ESP_OK;
 }
 
@@ -226,7 +248,7 @@ void servo_natural_wind_boost(bool enable)
 {
     if (s_natural_boost == enable) return;  /* 状态未变, 跳过 */
     s_natural_boost = enable;
-    servo_set_natural_wind_angle(s_natural_wind_angle);
+    natural_wind_apply(s_natural_wind_current);  /* 直接重写 20/22, 不重跑动画 */
     ESP_LOGI(TAG, "Natural-wind boost -> %s", enable ? "ON" : "OFF");
 }
 

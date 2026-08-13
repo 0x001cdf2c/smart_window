@@ -10,16 +10,20 @@
 static const char *TAG = "WIND_SCAN";
 
 #define SCAN_SERVO_GPIO     GPIO_NUM_4
-#define SWEEP_DELAY_MS      15
+#define SWEEP_DELAY_MS      167  /* 每步延时(ms): 单程120°约20秒, 慢速平滑扫描 */
 #define SERVO_PERIOD_US     20000
 #define PULSE_MIN_US        500
 #define PULSE_MAX_US        2500
 
+/* 自然风扫描范围: 只覆盖 120° (30°~150°), 以 90° 为中心 */
+#define SCAN_MIN_DEG        30
+#define SCAN_MAX_DEG        150
+
 typedef enum {
     PHASE_IDLE = 0,
-    PHASE_90_TO_180,
-    PHASE_180_TO_0,
-    PHASE_0_TO_90,
+    PHASE_90_TO_150,
+    PHASE_150_TO_30,
+    PHASE_30_TO_90,
 } sweep_phase_t;
 
 static bool                s_scanning = false;
@@ -91,9 +95,9 @@ static void scanner_task(void *arg)
         }
 
         int deg = 90;
-        sweep_phase_t phase = PHASE_90_TO_180;
+        sweep_phase_t phase = PHASE_90_TO_150;
         servo_start(90);
-        ESP_LOGI(TAG, "Scan start: 90→180→0→90 (analog wind sensor)");
+        ESP_LOGI(TAG, "Scan start: 90→150→30→90 (120° range, analog wind sensor)");
 
         while (phase != PHASE_IDLE) {
             if (deg >= 0 && deg <= 180) {
@@ -103,15 +107,15 @@ static void scanner_task(void *arg)
             }
 
             switch (phase) {
-            case PHASE_90_TO_180:
+            case PHASE_90_TO_150:
                 deg++;
-                if (deg > 180) { phase = PHASE_180_TO_0; deg = 179; }
+                if (deg > SCAN_MAX_DEG) { phase = PHASE_150_TO_30; deg = SCAN_MAX_DEG - 1; }
                 break;
-            case PHASE_180_TO_0:
+            case PHASE_150_TO_30:
                 deg--;
-                if (deg < 0) { phase = PHASE_0_TO_90; deg = 1; }
+                if (deg < SCAN_MIN_DEG) { phase = PHASE_30_TO_90; deg = SCAN_MIN_DEG + 1; }
                 break;
-            case PHASE_0_TO_90:
+            case PHASE_30_TO_90:
                 deg++;
                 if (deg >= 90) {
                     phase = PHASE_IDLE;

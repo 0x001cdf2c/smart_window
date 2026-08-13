@@ -5,8 +5,9 @@
 static const char *TAG = "AIRFLOW";
 
 #define AIRFLOW_ADC_CHANNEL  2       /* ADS1115 AIN2 */
-#define AIRFLOW_THRESHOLD    30      /* ~3.75mV, below this = no wind */
-#define AIRFLOW_RAW_MAX      3000    /* ~375mV = 100% wind */
+#define AIRFLOW_THRESHOLD    5       /* 0.625mV, 极微弱电压即判有风 */
+#define AIRFLOW_RAW_MAX      16      /* 满量程: raw=16 (~2mV)=100%, raw=8=50% */
+#define AIRFLOW_GAIN         1       /* 增益 (1=原始) */
 
 static bool s_ready = false;
 static int16_t s_last_raw = 0;
@@ -14,8 +15,8 @@ static int16_t s_last_raw = 0;
 bool airflow_sensor_init(void)
 {
     s_ready = true;
-    ESP_LOGI(TAG, "Airflow ready (ADS1115 AIN2, threshold=%d, max=%d)",
-             AIRFLOW_THRESHOLD, AIRFLOW_RAW_MAX);
+    ESP_LOGI(TAG, "Airflow ready (ADS1115 AIN2, threshold=%d, max=%d, gain=%d)",
+             AIRFLOW_THRESHOLD, AIRFLOW_RAW_MAX, AIRFLOW_GAIN);
     return true;
 }
 
@@ -36,7 +37,7 @@ bool airflow_sensor_read(bool *has_airflow)
 
     s_last_raw = best;
     bool wind = (best >= AIRFLOW_THRESHOLD);
-    int pct = best * 100 / AIRFLOW_RAW_MAX;
+    int pct = best * 100 * AIRFLOW_GAIN / AIRFLOW_RAW_MAX;
     if (pct > 100) pct = 100;
 
     /* 每次都打印, 方便校准阈值 */
@@ -63,7 +64,7 @@ int airflow_sensor_read_pct(void)
     if (raw < 0) raw = 0;
     s_last_raw = raw;
 
-    int pct = (int)raw * 100 / AIRFLOW_RAW_MAX;
+    int pct = (int)raw * 100 * AIRFLOW_GAIN / AIRFLOW_RAW_MAX;
     if (pct > 100) pct = 100;
     ESP_LOGI(TAG, "AIN2 raw=%d → %d%%", (int)raw, pct);
     return pct;

@@ -234,6 +234,11 @@ def fetch_weather(city_name: str) -> dict | None:
         geo.raise_for_status()
         geo_data = geo.json()
         if not geo_data.get("results"):
+            # 中文名可能查不到 (如 "厦门"), 尝试加"市"后缀 (厦门→厦门市)
+            geo = requests.get(GEO_URL, params={"name": city_name + "市", "count": 1, "language": "zh"}, timeout=10)
+            geo.raise_for_status()
+            geo_data = geo.json()
+        if not geo_data.get("results"):
             log("WEATHER", f"未找到城市: {city_name}")
             return None
 
@@ -265,7 +270,7 @@ def fetch_weather(city_name: str) -> dict | None:
         wind_dir_cn = dirs[round(wind_dir / 45) % 8]
 
         return {
-            "city": loc.get("name", city_name),
+            "city": city_name,
             "weather": weather_text,
             "weather_detail": weather_detail,
             "high": (daily.get("temperature_2m_max") or [0])[0],
@@ -393,9 +398,50 @@ def fetch_asr(pcm_data: bytes, sample_rate: int = 16000) -> str | None:
         return None
 
 # ── Fallback NLP: 云端失败时用关键词匹配 (保证必有语音回复) ──
+import re
+
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+def _cn_to_int(s: str) -> int | None:
+    """中文数字 → 整数 (支持 零~九十九, 用于时间解析)."""
+    if not s:
+        return None
+    if s in _CN_DIGITS:
+        return _CN_DIGITS[s]
+    if "十" in s:
+        parts = s.split("十")
+        tens = 1 if parts[0] == "" else _CN_DIGITS.get(parts[0])
+        if tens is None:
+            return None
+        ones = _CN_DIGITS.get(parts[1], 0) if len(parts) > 1 and parts[1] else 0
+        return tens * 10 + ones
+    return None
+
+def _extract_time(text: str) -> str | None:
+    """从文本提取 HH:MM 时间 (支持 阿拉伯/中文数字, 如 10点13分 / 十点十三分 / 8点半)."""
+    # 阿拉伯数字: 10:13 / 10点13分 / 10点 / 10点半
+    m = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})?\s*分?', text)
+    if m:
+        h = int(m.group(1))
+        mm = int(m.group(2)) if m.group(2) else 0
+        if "半" in text:
+            mm = 30
+        if 0 <= h <= 23 and 0 <= mm <= 59:
+            return f"{h:02d}:{mm:02d}"
+    # 中文数字: 十点十三分 / 八点半
+    m = re.search(r'([零一二两三四五六七八九十]+)\s*点\s*([零一二两三四五六七八九十]+)?\s*分?', text)
+    if m:
+        h = _cn_to_int(m.group(1))
+        mm = _cn_to_int(m.group(2)) if m.group(2) else 0
+        if "半" in text:
+            mm = 30
+        if h is not None and 0 <= h <= 23 and mm is not None and 0 <= mm <= 59:
+            return f"{h:02d}:{mm:02d}"
+    return None
+
 def fallback_nlp(text: str) -> dict | None:
-    """Simple keyword fallback when DeepSeek is unavailable.
-    Returns None ONLY for timer commands that need time extraction."""
+    """Simple keyword fallback when DeepSeek is unavailable."""
     has_open = any(w in text for w in ["打开", "开窗", "开开", "通风", "透气", "换气",
                                         "太闷", "闷死", "热死", "有点热", "凉快"])
     has_close = any(w in text for w in ["关闭", "关窗", "关上", "遮光", "遮阳",
@@ -403,8 +449,16 @@ def fallback_nlp(text: str) -> dict | None:
     has_stop = any(w in text for w in ["停止", "暂停", "别动", "取消"])
     has_timer = any(w in text for w in ["点", "分", "半", "定时", "后", "分钟", "小时"])
 
-    if has_timer and (has_open or has_close):
-        return None  # timer needs time extraction, can't fallback
+    # 定时: 尝试提取时间
+    if has_timer:
+        t = _extract_time(text)
+        if t:
+            cmd = "close" if has_close else "open"
+            return {"action": "timer", "time": t, "cmd": cmd,
+                    "reply": f"好的, {t} 帮你{'关' if cmd == 'close' else '开'}窗~"}
+        if has_open or has_close:
+            return None  # 明确开/关但没提取到时间, 无法 fallback
+
     if has_open:
         return {"action": "open", "reply": "好的，打开窗户~"}
     if has_close:
@@ -426,12 +480,12 @@ def fetch_nlp(text: str, context: str) -> dict | None:
                 {"role": "system", "content": VOICE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "max_tokens": 120,
+            "max_tokens": 3000,   # 推理模型 reasoning+输出共享预算, 需足够长
             "temperature": 0.7,
         }, headers={
             "Authorization": f"Bearer {LLM_API_KEY}",
             "Content-Type": "application/json",
-        }, timeout=15)
+        }, timeout=45)
         resp.raise_for_status()
         data = resp.json()
         raw = data["choices"][0]["message"]["content"].strip()
@@ -883,7 +937,7 @@ async def main(city: str, weather_interval: int):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Smart Blinds Server")
-    parser.add_argument("--city", default="南京", help="天气城市 (默认: 南京)")
+    parser.add_argument("--city", default="厦门", help="天气城市 (默认: 厦门)")
     parser.add_argument("--weather-interval", type=int, default=1800,
                         help="天气推送间隔/秒 (默认: 1800)")
     args = parser.parse_args()

@@ -55,6 +55,7 @@ static bool  s_rain_manual = false;   /* true = user manually overrode rain shel
 /* Forward declarations (referenced in network_init_task) */
 static void on_message(const char *type, const char *data, uint16_t data_len);
 static void sensor_task(void *arg);
+static void airflow_fast_task(void *arg);
 static void video_stream_task(void *arg);
 
 /* ── UI 按钮动作处理: 由 ui.c 的事件回调触发 ── */
@@ -1018,6 +1019,17 @@ static void sensor_task(void *arg)
     }
 }
 
+/* ── 气流高速采样 (每100ms, 用于实时观测发电机电压/校准) ──
+ * 脚本 airflow_voltage_monitor.py 匹配 "AIN2 raw=" 提取 raw 并换算电压。 */
+static void airflow_fast_task(void *arg)
+{
+    while (1) {
+        int16_t raw = airflow_sensor_read_raw();
+        ESP_LOGI(TAG, "AIN2 raw=%d", (int)raw);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 /* ── Timer fire callback: routes through command queue for thread safety ── */
 static void on_timer_fire(const char *action, const char *reply)
 {
@@ -1237,6 +1249,9 @@ void app_main(void)
     /* 传感器任务 — 所有 I2C 设备就绪后启动 (msg_bus_send 在未连接时安全返回 -1) */
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "Sensor task started");
+
+    /* 气流高速采样任务 (100ms) — 校准用, 输出 "AIN2 raw=" 供监视脚本解析 */
+    xTaskCreate(airflow_fast_task, "airflow_fast", 2048, NULL, 3, NULL);
 
     /* I2C bus handle stays valid — all devices share it.
        Sensors+touch already have their handles; camera SCCB creates its own later. */
