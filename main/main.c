@@ -809,8 +809,8 @@ static void sensor_task(void *arg)
             }
         }
 
-        /* ── 雨棚自动控制: rain > 50% 展开, 否则收起; 手动操作后自动失效 ── */
-        if (!s_rain_manual) {
+        /* ── 雨棚自动控制: 仅在环境模式下, rain > 50% 展开, 否则收起 ── */
+        if (control_get_mode() == CONTROL_MODE_ENV && !s_rain_manual) {
             if (s_last_rain > 50) {
                 servo_rain_shelter_set(true);
             } else {

@@ -102,6 +102,32 @@ def _build_hourly_summary(hourly: dict) -> str:
 
     return "，".join(parts) if parts else dominant_text
 
+def _dominant_weather_code(hourly: dict) -> int:
+    """逐小时天气里出现最多的 WMO code (代表当天主流天气)."""
+    codes = hourly.get("weather_code", [])
+    if not codes:
+        return 0
+    count = {}
+    for c in codes:
+        count[c] = count.get(c, 0) + 1
+    return max(count, key=count.get)
+
+def _kmh_to_beaufort(kmh: float) -> int:
+    """风速 km/h → 蒲福风级 (0~12级)."""
+    if kmh < 1: return 0
+    if kmh <= 5: return 1
+    if kmh <= 11: return 2
+    if kmh <= 19: return 3
+    if kmh <= 28: return 4
+    if kmh <= 38: return 5
+    if kmh <= 49: return 6
+    if kmh <= 61: return 7
+    if kmh <= 74: return 8
+    if kmh <= 88: return 9
+    if kmh <= 102: return 10
+    if kmh <= 117: return 11
+    return 12
+
 # ── DeepSeek ──
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-10e46871ed9545e9a644f1419a3208a7")
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -259,8 +285,9 @@ def fetch_weather(city_name: str) -> dict | None:
         daily = w_data.get("daily", {})
         current = w_data.get("current", {})
         hourly = w_data.get("hourly", {})
-        daily_code = (daily.get("weather_code") or [0])[0]
-        weather_text = WMO_CODES.get(daily_code, f"code{daily_code}")
+        # daily weather_code 是"当日最严重时段"的 code, 会把偶发强对流(如冰雹)当整天天气
+        # 改用逐小时主导 code 作为当日天气
+        weather_text = WMO_CODES.get(_dominant_weather_code(hourly), "多云")
 
         # 从逐小时数据生成详细天气摘要
         weather_detail = _build_hourly_summary(hourly)
@@ -276,7 +303,7 @@ def fetch_weather(city_name: str) -> dict | None:
             "high": (daily.get("temperature_2m_max") or [0])[0],
             "low": (daily.get("temperature_2m_min") or [0])[0],
             "rain_pct": (daily.get("precipitation_probability_max") or [0])[0],
-            "wind": f"{wind_dir_cn}风 {current.get('wind_speed_10m', 0):.0f}级",
+            "wind": f"{wind_dir_cn}风 {_kmh_to_beaufort(current.get('wind_speed_10m', 0))}级",
         }
     except Exception as e:
         log("WEATHER", f"获取失败: {e}")
@@ -296,11 +323,11 @@ def fetch_suggestion(sensor: dict, weather: dict) -> str | None:
             wind=weather.get("wind", "--"),
         )
         resp = requests.post(DEEPSEEK_API_URL, json={
-            "model": "deepseek-v4-pro",
+            "model": "deepseek-v4-flash",
             "messages": [
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 80,
+            "max_tokens": 3000,
             "temperature": 0.7,
         }, headers={
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",

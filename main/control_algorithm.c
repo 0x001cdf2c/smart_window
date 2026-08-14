@@ -28,7 +28,8 @@ static struct {
     char    close_time[6];
     bool    enabled;
     bool    repeat_daily;
-    int     last_day_triggered;  /* day of year */
+    int     last_open_day;   /* day of year open already fired */
+    int     last_close_day;  /* day of year close already fired */
 } s_timer;
 
 /* Adaptive learning: ring buffer in NVS */
@@ -706,7 +707,8 @@ void control_timer_set(const char *open_time, const char *close_time,
     s_timer.close_time[5] = '\0';
     s_timer.enabled = enabled;
     s_timer.repeat_daily = repeat_daily;
-    s_timer.last_day_triggered = -1;
+    s_timer.last_open_day = -1;
+    s_timer.last_close_day = -1;
     nvs_save_timer();
     ESP_LOGI(TAG, "Timer: open=%s close=%s en=%d repeat=%d",
              s_timer.open_time, s_timer.close_time, enabled, repeat_daily);
@@ -726,6 +728,7 @@ void control_timer_get_config(char *open_out, char *close_out,
 void control_timer_tick(void)
 {
     time_t now = time(NULL);
+    if (now < 1700000000) return;  /* clock not synced yet; avoid spurious fires */
     struct tm tm;
     localtime_r(&now, &tm);
     char now_str[6];
@@ -756,22 +759,30 @@ void control_timer_tick(void)
     if (!s_timer.enabled) return;
     if (s_timer.open_time[0] == '\0' && s_timer.close_time[0] == '\0') return;
 
-    if (!s_timer.repeat_daily && s_timer.last_day_triggered == today)
-        return;
-
     /* Check open time */
     if (s_timer.open_time[0] && strcmp(now_str, s_timer.open_time) == 0
-        && s_timer.last_day_triggered != today) {
+        && s_timer.last_open_day != today) {
         ESP_LOGI(TAG, "Timer: OPEN at %s", now_str);
-        if (!s_timer.repeat_daily) s_timer.last_day_triggered = today;
+        s_timer.last_open_day = today;
         if (s_timer_fire_cb) s_timer_fire_cb("open", "");
     }
 
     /* Check close time */
     if (s_timer.close_time[0] && strcmp(now_str, s_timer.close_time) == 0
-        && s_timer.last_day_triggered != today) {
+        && s_timer.last_close_day != today) {
         ESP_LOGI(TAG, "Timer: CLOSE at %s", now_str);
-        if (!s_timer.repeat_daily) s_timer.last_day_triggered = today;
+        s_timer.last_close_day = today;
         if (s_timer_fire_cb) s_timer_fire_cb("close", "");
+    }
+
+    /* One-shot ("once") timer: disable after its configured times fire */
+    if (!s_timer.repeat_daily) {
+        bool open_done  = (s_timer.open_time[0] == '\0')  || (s_timer.last_open_day == today);
+        bool close_done = (s_timer.close_time[0] == '\0') || (s_timer.last_close_day == today);
+        if (open_done && close_done) {
+            s_timer.enabled = false;
+            nvs_save_timer();
+            ESP_LOGI(TAG, "Timer: one-shot complete, disabled");
+        }
     }
 }
