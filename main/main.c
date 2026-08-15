@@ -224,8 +224,8 @@ static void on_wake_word(int wake_word_index, const char *wake_word_name)
 /* ── 拼音 → 中文命令文本映射 ── */
 static const char *get_command_chinese(const char *pinyin)
 {
-    if (strstr(pinyin, "da kai chuang lian"))   return "打开窗帘";
-    if (strstr(pinyin, "guan bi chuang lian"))  return "关闭窗帘";
+    if (strstr(pinyin, "da kai chuang hu"))     return "打开窗户";
+    if (strstr(pinyin, "guan bi chuang hu"))    return "关闭窗户";
     if (strstr(pinyin, "ting zhi"))             return "停止";
     if (strstr(pinyin, "da kai deng guang"))    return "打开灯光";
     if (strstr(pinyin, "guan bi deng guang"))   return "关闭灯光";
@@ -242,12 +242,12 @@ static void on_speech_command(const char *command_str)
     char buf[64];
 
     if (chinese) {
-        if (strcmp(chinese, "打开窗帘") == 0) {
+        if (strcmp(chinese, "打开窗户") == 0) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
             servo_set_angle(0.0f);
             snprintf(buf, sizeof(buf), "收到，%s", chinese);
-        } else if (strcmp(chinese, "关闭窗帘") == 0) {
+        } else if (strcmp(chinese, "关闭窗户") == 0) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
             servo_set_angle(90.0f);
@@ -733,8 +733,10 @@ static void sensor_task(void *arg)
 
         /* 双温湿度传感器 (室内 SHT3x@0x44, 室外 SHT3x@0x45) */
         sht3x_data_t sht_in = {0}, sht_out = {0};
-        float t_in = 0, h_in = 0, t_out = 0, h_out = 0;
-        if (sht3x_read(SHT3X_INDOOR, &sht_in)) {
+        float t_in = s_last_temp, h_in = s_last_humi;
+        float t_out = s_last_temp_out, h_out = s_last_humi_out;
+        bool in_ok = sht3x_read(SHT3X_INDOOR, &sht_in);
+        if (in_ok) {
             t_in = sht_in.temperature; h_in = sht_in.humidity;
             ESP_LOGI(TAG, "SHT3x[内]: T=%.1f H=%.0f", t_in, h_in);
         }
@@ -743,16 +745,17 @@ static void sensor_task(void *arg)
             ESP_LOGI(TAG, "SHT3x[外]: T=%.1f H=%.0f", t_out, h_out);
         }
         /* 真实光照数据 (BH1750) */
-        float lux_f = 0;
+        float lux_f = s_last_light;
         bh1750_read(&lux_f);
         int light = (int)lux_f;
 
-        /* 烟雾/雨水/气流 — 真实传感器读数 */
+        /* 烟雾/雨水/气流 — 真实传感器读数 (读失败保留上次值) */
         {
-            int smoke = 0, rain = 0;
+            int smoke = s_last_smoke, rain = s_last_rain;
             smoke_sensor_read(&smoke);
             rain_sensor_read(&rain);
             int air_pct = airflow_sensor_read_pct();
+            if (air_pct < 0) air_pct = s_last_airflow;   /* 读失败 → 保留上次值 */
             s_last_smoke   = smoke;
             s_last_rain    = rain;
             s_last_airflow = air_pct;
@@ -766,8 +769,10 @@ static void sensor_task(void *arg)
         s_last_humi_out = h_out;
         s_last_light    = lux_f;
 
-        /* ── 环境感知模式: 传感器驱动窗户 ── */
-        if (control_get_mode() == CONTROL_MODE_ENV) {
+        /* ── 环境感知模式: 传感器驱动窗户 ──
+         * 室内温湿度读到0(读失败) → 跳过决策, 保持扇叶当前角度不变
+         * (仅影响百叶扇叶角度; 下方雨棚因下雨展开是独立 if 块, 不受 in_ok 约束) */
+        if (control_get_mode() == CONTROL_MODE_ENV && in_ok) {
             env_action_t act = control_env_evaluate(t_in, t_out, h_in, lux_f,
                                                        (float)s_last_smoke,
                                                        (float)s_last_rain);
@@ -1019,17 +1024,6 @@ static void sensor_task(void *arg)
     }
 }
 
-/* ── 气流高速采样 (每100ms, 用于实时观测发电机电压/校准) ──
- * 脚本 airflow_voltage_monitor.py 匹配 "AIN2 raw=" 提取 raw 并换算电压。 */
-static void airflow_fast_task(void *arg)
-{
-    while (1) {
-        int16_t raw = airflow_sensor_read_raw();
-        ESP_LOGI(TAG, "AIN2 raw=%d", (int)raw);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
 /* ── Timer fire callback: routes through command queue for thread safety ── */
 static void on_timer_fire(const char *action, const char *reply)
 {
@@ -1172,13 +1166,14 @@ void app_main(void)
 
     /* 0. 初始化 6 路舵机 (GPIO20-23=百叶, GPIO32-33=雨棚) */
     int servo_gpios[6] = {20, 21, 22, 23, 32, 33};
+    /* 雨棚舵机面对面安装, #5 反转使得两舵机同向转动
+     * (须在 servo_init 前设置, 供雨棚初始收起角 135° 正确换算) */
+    servo_set_inverted(5, true);
     if (servo_init(servo_gpios) == 0) {
-        /* 雨棚舵机面对面安装, #5 反转使得两舵机同向转动 */
-        servo_set_inverted(5, true);
         servo_set_angle(90.0f);
         servo_set_mode(SERVO_MODE_MANUAL);
         g_auto_running = false;
-        ESP_LOGI(TAG, "舵机 x6 就绪 (GPIO20-23,32-33, 初始=90°)");
+        ESP_LOGI(TAG, "舵机 x6 就绪 (GPIO20-23,32-33, 百叶初始=90°, 雨棚初始=收起)");
     } else {
         ESP_LOGW(TAG, "舵机初始化失败");
     }
@@ -1225,6 +1220,7 @@ void app_main(void)
         sr_on_wake_cb(on_wake_word);
         sr_on_command_cb(on_speech_command);
         sr_on_audio_cb(on_audio_stream);
+        sr_set_cloud_available_cb(msg_bus_is_connected);
         sr_start();
         xTaskCreate(speech_task, "speech", 4096, NULL, 4, NULL);
         sr_ok = true;
@@ -1249,9 +1245,6 @@ void app_main(void)
     /* 传感器任务 — 所有 I2C 设备就绪后启动 (msg_bus_send 在未连接时安全返回 -1) */
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "Sensor task started");
-
-    /* 气流高速采样任务 (100ms) — 校准用, 输出 "AIN2 raw=" 供监视脚本解析 */
-    xTaskCreate(airflow_fast_task, "airflow_fast", 2048, NULL, 3, NULL);
 
     /* I2C bus handle stays valid — all devices share it.
        Sensors+touch already have their handles; camera SCCB creates its own later. */

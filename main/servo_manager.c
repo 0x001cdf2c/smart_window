@@ -19,6 +19,8 @@ static const char *TAG = "SERVO";
 #define OP_COUNT 3
 #define CH_PER_OP 2
 #define BLINDS_COUNT 4   /* 前4路=百叶窗, 后2路=雨棚 */
+#define RAIN_SHELTER_EXPANDED_DEG   90.0f   /* 雨棚展开角 */
+#define RAIN_SHELTER_COLLAPSED_DEG  135.0f  /* 雨棚收起角 */
 
 static int          s_gpios[SERVO_COUNT];
 static bool         s_inverted[SERVO_COUNT];
@@ -121,8 +123,9 @@ esp_err_t servo_init(const int gpios[SERVO_COUNT])
                 return ret;
             }
 
-            /* Initial: 90 deg */
-            float init_angle = s_inverted[idx] ? (180.0f - 90.0f) : 90.0f;
+            /* Initial: blinds 90°, rain shelter 135° (收起) */
+            float init_deg = (idx >= BLINDS_COUNT) ? RAIN_SHELTER_COLLAPSED_DEG : 90.0f;
+            float init_angle = s_inverted[idx] ? (180.0f - init_deg) : init_deg;
             ret = mcpwm_comparator_set_compare_value(s_cmprs[idx], angle_to_pulse_us(init_angle));
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "MCPWM cmp set %d failed", idx);
@@ -258,8 +261,8 @@ void servo_natural_wind_boost(bool enable)
 #define RAIN_SHELTER_SPEED_DELAY_MS  40   /* 每步延时, 控制旋转速度 */
 #define RAIN_SHELTER_ANGLE_STEP      2.0f  /* 每步角度增量 */
 
-static bool s_rain_expanded = true;   /* 初始90°=展开, 与 servo_init 初始角一致 */
-static float s_rain_angle = 90.0f;    /* 雨棚当前角度, 初始90° */
+static bool s_rain_expanded = false;                    /* 初始收起, 与 servo_init 初始角一致 */
+static float s_rain_angle = RAIN_SHELTER_COLLAPSED_DEG; /* 雨棚当前角度, 初始收起(135°) */
 
 static void rain_shelter_move_to(float target_angle)
 {
@@ -302,7 +305,7 @@ void servo_rain_shelter_set(bool expand)
     if (expand == s_rain_expanded) return;
 
     /* expand=展开(90°), collapse=收起(135°) */
-    float target = expand ? 90.0f : 135.0f;
+    float target = expand ? RAIN_SHELTER_EXPANDED_DEG : RAIN_SHELTER_COLLAPSED_DEG;
 
     rain_shelter_move_to(target);
 

@@ -8,4 +8,4 @@
 bool airflow_sensor_init(void);
 bool airflow_sensor_read(bool *has_airflow);
 int16_t airflow_sensor_read_raw(void);    /* raw ADC value */
-int airflow_sensor_read_pct(void);        /* 0-100% wind speed */
+int airflow_sensor_read_pct(void);        /* 0-100% wind speed, -1 on read failure */

@@ -60,7 +60,7 @@ int16_t airflow_sensor_read_raw(void)
 int airflow_sensor_read_pct(void)
 {
     int16_t raw = 0;
-    if (!ads1115_read_channel(AIRFLOW_ADC_CHANNEL, &raw)) return 0;
+    if (!ads1115_read_channel(AIRFLOW_ADC_CHANNEL, &raw)) return -1;  /* 读失败 */
     if (raw < 0) raw = 0;
     s_last_raw = raw;
 

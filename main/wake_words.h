@@ -26,11 +26,11 @@ static const char *WAKE_WORD_NAMES[] = {
 
 /* ── 中文命令词列表 (拼音无音调, MultiNet7 要求) ──
  * 格式: 拼音音节以空格分隔, 不带声调数字
- * 如 "da kai chuang lian" = 打开窗帘
+ * 如 "da kai chuang hu" = 打开窗户
  */
 static const char *SPEECH_COMMANDS[] = {
-    "da kai chuang lian",   /* 打开窗帘 */
-    "guan bi chuang lian",  /* 关闭窗帘 */
+    "da kai chuang hu",     /* 打开窗户 */
+    "guan bi chuang hu",    /* 关闭窗户 */
     "ting zhi",             /* 停止 */
     "da kai deng guang",    /* 打开灯光 */
     "guan bi deng guang",   /* 关闭灯光 */

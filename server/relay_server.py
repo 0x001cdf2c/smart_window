@@ -14,6 +14,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
 
 import websockets
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 import requests
 
 # ============================================================
@@ -206,6 +207,7 @@ ADAPTIVE_MODEL = "deepseek-chat"  # 非推理模型, 稳定输出 JSON
 
 # Per-device audio accumulation
 audio_buffers: dict[str, bytearray] = {}
+audio_buffer_ts: dict[str, float] = {}  # 每路设备最后一块音频时间, 用于检测断流残留
 
 VOICE_SYSTEM_PROMPT = """你是一个智能窗户语音助手。会收到一段用户语音，结合传感器和天气数据，判断意图并回复。
 
@@ -614,6 +616,13 @@ def fetch_adaptive(user_msg: str) -> dict | None:
 # ── Async handlers for ASR pipeline ──
 async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
     """Accumulate audio chunks, call ASR on end-of-speech."""
+    now = time.time()
+    # 一句话的音频块间隔约 160ms; 若距上一块已超 3s, 说明上一句因断线没收到 is_end,
+    # 旧缓冲残留会导致下一句被拼接污染 (如 "把把窗户关上"), 这里强制清空。
+    if now - audio_buffer_ts.get(dev_id, 0.0) > 3.0:
+        audio_buffers.pop(dev_id, None)
+    audio_buffer_ts[dev_id] = now
+
     buf = audio_buffers.setdefault(dev_id, bytearray())
 
     import base64
@@ -626,6 +635,7 @@ async def handle_asr_audio(dev_id: str, inner: dict, device_ws):
         log("ASR", f"base64解码失败: {e}")
 
     if inner.get("is_end"):
+        audio_buffer_ts.pop(dev_id, None)
         if len(buf) < 1600:  # < 50ms, too short
             log("ASR", f"音频太短 ({len(buf)} bytes), 跳过")
             audio_buffers.pop(dev_id, None)
@@ -839,6 +849,8 @@ async def handle_connection(ws):
                 ws_to_role[ws] = "device"
                 clients.setdefault(device_id, set())
                 log("DEVICE", f"上线: {device_id}")
+                audio_buffers.pop(device_id, None)
+                audio_buffer_ts.pop(device_id, None)
                 await ws.send(json.dumps({"type": "registered", "payload": {"device_id": device_id}}))
                 # push weather on device connect
                 if weather_city:
@@ -946,6 +958,13 @@ async def handle_connection(ws):
 # ============================================================
 # Main
 # ============================================================
+async def _safe_handle_connection(ws):
+    """包装 handle_connection, 设备/客户端掉线时只打一行日志, 不再刷整段堆栈."""
+    try:
+        await handle_connection(ws)
+    except (ConnectionClosed, ConnectionResetError, BrokenPipeError) as e:
+        log("WS", f"连接断开: {type(e).__name__} ({e})")
+
 async def main(city: str, weather_interval: int):
     global weather_city
     weather_city = city
@@ -958,7 +977,7 @@ async def main(city: str, weather_interval: int):
         asyncio.create_task(weather_loop(city, weather_interval))
         log("WEATHER", f"已启用 城市={city} 间隔={weather_interval}s")
 
-    async with websockets.serve(handle_connection, "0.0.0.0", WS_PORT):
+    async with websockets.serve(_safe_handle_connection, "0.0.0.0", WS_PORT):
         await asyncio.Future()
 
 if __name__ == "__main__":

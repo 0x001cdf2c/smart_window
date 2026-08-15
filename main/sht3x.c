@@ -73,21 +73,25 @@ static bool read_hw(sht3x_data_t *out)
 {
     if (!s_hw_ready || !out || !s_hw_dev) return false;
 
-    uint8_t cmd[2] = {0x2C, 0x06};
-    if (i2c_master_transmit(s_hw_dev, cmd, 2, pdMS_TO_TICKS(100)) != ESP_OK) return false;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        uint8_t cmd[2] = {0x2C, 0x06};
+        if (i2c_master_transmit(s_hw_dev, cmd, 2, pdMS_TO_TICKS(100)) != ESP_OK) continue;
 
-    vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(20));
 
-    uint8_t buf[6] = {0};
-    if (i2c_master_receive(s_hw_dev, buf, 6, pdMS_TO_TICKS(100)) != ESP_OK) return false;
+        uint8_t buf[6] = {0};
+        if (i2c_master_receive(s_hw_dev, buf, 6, pdMS_TO_TICKS(100)) != ESP_OK) continue;
 
-    if (crc8(buf, 2) != buf[2] || crc8(buf + 3, 2) != buf[5]) return false;
+        if (crc8(buf, 2) != buf[2] || crc8(buf + 3, 2) != buf[5]) continue;
 
-    uint16_t t_raw = (buf[0] << 8) | buf[1];
-    uint16_t h_raw = (buf[3] << 8) | buf[4];
-    out->temperature = -45.0f + 175.0f * (float)t_raw / 65535.0f;
-    out->humidity    = 100.0f * (float)h_raw / 65535.0f;
-    return true;
+        uint16_t t_raw = (buf[0] << 8) | buf[1];
+        uint16_t h_raw = (buf[3] << 8) | buf[4];
+        out->temperature = -45.0f + 175.0f * (float)t_raw / 65535.0f;
+        out->humidity    = 100.0f * (float)h_raw / 65535.0f;
+        return true;
+    }
+    ESP_LOGW(TAG, "室内 SHT3x read failed after retry");
+    return false;
 }
 
 static bool read_sw(sht3x_data_t *out)

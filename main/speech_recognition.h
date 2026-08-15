@@ -29,6 +29,9 @@ void sr_on_command_cb(sr_on_command_t cb);
 /* 注册音频流回调 (ASR 流模式, 替代 MultiNet) */
 void sr_on_audio_cb(sr_on_audio_t cb);
 
+/* 注册云端可用性查询回调 (返回 false 时唤醒后回退到本地 MultiNet) */
+void sr_set_cloud_available_cb(bool (*cb)(void));
+
 /* 启动语音识别 */
 void sr_start(void);
 

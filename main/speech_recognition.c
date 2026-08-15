@@ -58,6 +58,7 @@ static int fetch_chunksize;
 static sr_on_wake_t   on_wake   = NULL;
 static sr_on_command_t on_cmd   = NULL;
 static sr_on_audio_t   on_audio = NULL;
+static bool (*cloud_available_cb)(void) = NULL;
 
 static bool mn_active = false;
 
@@ -353,6 +354,7 @@ int sr_init(void)
 void sr_on_wake_cb(sr_on_wake_t cb)   { on_wake = cb; }
 void sr_on_command_cb(sr_on_command_t cb) { on_cmd = cb; }
 void sr_on_audio_cb(sr_on_audio_t cb) { on_audio = cb; }
+void sr_set_cloud_available_cb(bool (*cb)(void)) { cloud_available_cb = cb; }
 
 void sr_stop_streaming(void)
 {
@@ -582,8 +584,10 @@ void sr_poll(void)
 
         if (on_wake) on_wake(res->wake_word_index, name);
 
-        /* 优先走音频流 → 云端 ASR, 回退到本地 MultiNet */
-        if (on_audio) {
+        /* 联网优先走云端 ASR, 断网回退到本地 MultiNet */
+        bool cloud_ok = (on_audio != NULL) &&
+                        (cloud_available_cb == NULL || cloud_available_cb());
+        if (cloud_ok) {
             vTaskDelay(pdMS_TO_TICKS(800));  /* 等待 TTS "我在" 播完 */
             streaming = true;
             stream_len = 0;
@@ -593,7 +597,7 @@ void sr_poll(void)
         } else if (mn_handle && mn_data) {
             mn_active = true;
             mn_handle->clean(mn_data);
-            ESP_LOGI(TAG, "等待语音命令...");
+            ESP_LOGI(TAG, "断网, 回退本地命令词识别 (MultiNet)...");
         }
     }
 }

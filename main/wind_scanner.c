@@ -102,8 +102,10 @@ static void scanner_task(void *arg)
         while (phase != PHASE_IDLE) {
             if (deg >= 0 && deg <= 180) {
                 int spd = airflow_sensor_read_pct();
-                wind_acc[deg] += spd;
-                wind_samples[deg]++;
+                if (spd >= 0) {   /* 读失败返回 -1, 跳过 */
+                    wind_acc[deg] += spd;
+                    wind_samples[deg]++;
+                }
             }
 
             switch (phase) {

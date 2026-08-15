@@ -26,6 +26,42 @@ static bool initialized = false;
 static QueueHandle_t tts_queue = NULL;
 static int16_t *s_stereo_buf = NULL;  /* pre-allocated */
 
+/* 只保留语音集支持的字 (CJK 统一表意 + ASCII 字母数字/空格),
+ * 剔除标点/全角符号/表情, 否则 esp_tts_parse_chinese 遇到不支持字符会 assert 崩溃 */
+static void tts_sanitize(char *out, size_t out_cap, const char *in)
+{
+    const unsigned char *p = (const unsigned char *)in;
+    size_t o = 0;
+    while (*p && o + 1 < out_cap) {
+        unsigned int cp = 0;
+        int len = 0;
+        if (*p < 0x80) {
+            cp = *p; len = 1;
+        } else if ((*p & 0xE0) == 0xC0 && p[1]) {
+            cp = ((*p & 0x1F) << 6) | (p[1] & 0x3F); len = 2;
+        } else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
+            cp = ((*p & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); len = 3;
+        } else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) {
+            cp = ((*p & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F); len = 4;
+        } else {
+            p++;  /* 非法序列, 跳过 */
+            continue;
+        }
+
+        bool keep = false;
+        if (cp >= 0x4E00 && cp <= 0x9FFF) keep = true;                     /* CJK 统一表意 */
+        else if ((cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'z') ||
+                 (cp >= 'A' && cp <= 'Z') || cp == ' ') keep = true;       /* ASCII 字母数字/空格 */
+
+        if (keep && o + len < out_cap) {
+            memcpy(out + o, p, len);
+            o += len;
+        }
+        p += len;
+    }
+    out[o] = '\0';
+}
+
 /* ── 异步 TTS 播放任务 (TX 通道始终开启, 避免反复开关干扰 I2S 时钟) ── */
 static void tts_task(void *arg)
 {
@@ -34,10 +70,12 @@ static void tts_task(void *arg)
         if (xQueueReceive(tts_queue, &text, portMAX_DELAY) == pdTRUE) {
             if (!text || text[0] == '\0') { free(text); continue; }
 
-            ESP_LOGI(TAG, "播放: %s", text);
+            char clean[512];
+            tts_sanitize(clean, sizeof(clean), text);
+            ESP_LOGI(TAG, "播放: %s", clean);
 
             esp_tts_stream_reset(tts_hdl);
-            if (esp_tts_parse_chinese(tts_hdl, text) != 0) {
+            if (esp_tts_parse_chinese(tts_hdl, clean) != 0) {
                 int chunk_len;
                 short *chunk;
                 while ((chunk = esp_tts_stream_play(tts_hdl, &chunk_len, 3)) != NULL && chunk_len > 0) {
