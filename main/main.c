@@ -26,6 +26,7 @@
 #include "http_server_cam.h"
 #include "i2c_bus.h"
 #include "control_algorithm.h"
+#include "adaptive_mode.h"
 #include "wind_scanner.h"
 #include "local_nlp.h"
 #include <time.h>
@@ -727,7 +728,33 @@ static void on_message(const char *type, const char *data, uint16_t data_len)
 /* ── 传感器数据上报 (每5秒) ── */
 static void sensor_task(void *arg)
 {
+    int tick = 0;
     while (1) {
+        tick++;
+
+        /* ── 1s 快速雨水检测 (贯穿规则: 有雨立即展开雨棚) ── */
+        {
+            int rain = s_last_rain;
+            rain_sensor_read(&rain);
+            s_last_rain = rain;
+
+            if (adaptive_mode_rain_should_expand((float)s_last_rain)) {
+                if (!s_rain_manual &&
+                    (control_get_mode() == CONTROL_MODE_ENV ||
+                     control_get_mode() == CONTROL_MODE_ADAPTIVE)) {
+                    servo_rain_shelter_set(true);
+                }
+            } else if (control_get_mode() == CONTROL_MODE_ENV && !s_rain_manual) {
+                servo_rain_shelter_set(false);
+            }
+        }
+
+        /* ── 完整传感器扫描: 每 5 秒执行一次 ── */
+        if (tick % 5 != 0) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         float angle = servo_get_angle();
         const char *mode_str = servo_get_mode() == SERVO_MODE_AUTO ? "auto" : "manual";
 
@@ -785,9 +812,9 @@ static void sensor_task(void *arg)
             /* ENV_ACTION_NONE: 保持当前角度不变 */
         }
 
-        /* ── 用户自适应模式: 执行预测计划 ── */
+        /* ── 用户自适应模式: 气候矩阵 + 优先级瀑布 ── */
         if (control_get_mode() == CONTROL_MODE_ADAPTIVE) {
-            /* 传感器感知预测: 每5分钟重新计算一次 (串口输出炫酷匹配过程) */
+            /* 传感器感知预测: 每5分钟重新计算一次 (供用户习惯策略与预测展示) */
             static time_t s_last_sensor_predict = 0;
             time_t t_now = time(NULL);
             if (t_now - s_last_sensor_predict >= 300) {
@@ -799,29 +826,55 @@ static void sensor_task(void *arg)
             }
 
             const schedule_plan_t *plan = control_adaptive_get_plan();
-            if (plan && plan->count > 0) {
-                time_t now = time(NULL);
-                struct tm tm;
-                localtime_r(&now, &tm);
-                char now_str[6];
-                snprintf(now_str, sizeof(now_str), "%02d:%02d", tm.tm_hour, tm.tm_min);
-                for (int i = 0; i < plan->count; i++) {
-                    if (strcmp(now_str, plan->entries[i].time_str) == 0) {
-                        servo_set_angle((float)plan->entries[i].angle);
-                        control_adaptive_record(plan->entries[i].angle);
-                    }
+            adaptive_input_t ad_in = {
+                .rain_pct  = (float)s_last_rain,
+                .temp_in   = s_last_temp,
+                .temp_out  = s_last_temp_out,
+                .humi_out  = s_last_humi_out,
+                .wind_pct  = (float)s_last_airflow,
+                .light_lux = s_last_light,
+            };
+            adaptive_decision_t ad = adaptive_mode_evaluate(&ad_in, plan, time(NULL));
+
+            /* 死区: 角度变化 > 2° 才写入舵机, 避免每5s微调 */
+            if (fabsf(ad.blinds_angle - servo_get_angle()) > 2.0f) {
+                servo_set_angle(ad.blinds_angle);
+            }
+
+            if (ad.strategy == STRATEGY_USER_HABIT) {
+                control_adaptive_record(ad.blinds_angle);
+            }
+
+            if (ad.shelter_action == SHELTER_EXPAND) {
+                if (!s_rain_manual) servo_rain_shelter_set(true);
+            } else if (ad.shelter_action == SHELTER_COLLAPSE) {
+                if (!s_rain_manual) servo_rain_shelter_set(false);
+            }
+            /* SHELTER_HOLD: 雨棚不管 */
+
+            ESP_LOGI(TAG, "自适应[%s] 策略=%s 百叶=%.0f° 矩阵=[%.2f %.2f %.2f %.2f]",
+                     ad.climate_name, ad.strategy_name, ad.blinds_angle,
+                     ad.matrix[0], ad.matrix[1], ad.matrix[2], ad.matrix[3]);
+
+            /* 推送气候/策略/自学习矩阵到 Web UI */
+            {
+                cJSON *am = cJSON_CreateObject();
+                cJSON_AddStringToObject(am, "type", "adaptive_mode");
+                cJSON_AddStringToObject(am, "climate", ad.climate_name);
+                cJSON_AddStringToObject(am, "strategy", ad.strategy_name);
+                cJSON_AddNumberToObject(am, "blinds_angle", ad.blinds_angle);
+                cJSON *mx = cJSON_AddArrayToObject(am, "matrix");
+                for (int i = 0; i < 4; i++) {
+                    cJSON_AddItemToArray(mx, cJSON_CreateNumber(ad.matrix[i]));
                 }
+                char *js = cJSON_PrintUnformatted(am);
+                msg_bus_send("adaptive_mode", js);
+                free(js);
+                cJSON_Delete(am);
             }
         }
 
-        /* ── 雨棚自动控制: 仅在环境模式下, rain > 50% 展开, 否则收起 ── */
-        if (control_get_mode() == CONTROL_MODE_ENV && !s_rain_manual) {
-            if (s_last_rain > 50) {
-                servo_rain_shelter_set(true);
-            } else {
-                servo_rain_shelter_set(false);
-            }
-        }
+        /* ── 雨棚自动控制已上移至 1s 快速雨水检测路径 (见 while 循环开头) ── */
 
         /* ── 自然风模式: 扫描风向, 每5分钟重新扫描 ── */
         if (control_get_mode() == CONTROL_MODE_NATURAL) {
@@ -1020,7 +1073,7 @@ static void sensor_task(void *arg)
             cJSON_Delete(tsch);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -1153,6 +1206,7 @@ void app_main(void)
     nvs_flash_init();
 
     control_algorithm_init();
+    adaptive_mode_init();
     /* Register callback so timer fires go through command queue (thread-safe) */
     control_set_timer_fire_callback(on_timer_fire);
 

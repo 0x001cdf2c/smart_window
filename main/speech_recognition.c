@@ -510,7 +510,7 @@ void sr_poll(void)
             sum_sq += s * s;
         }
         float rms = sqrtf((float)(sum_sq / mono_samples));
-        bool is_speech = (rms > 150.0f);  /* 阈值: RMS > 150 视为说话 */
+        bool is_speech = (rms > 200.0f);  /* 阈值: RMS > 200 视为说话 */
 
         if (is_speech) {
             stream_silence_ms = 0;

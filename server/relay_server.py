@@ -1,7 +1,7 @@
 """
 Smart Blinds Server — WebSocket relay + HTTP web UI + weather push
 Usage:
-    python relay_server.py [--city 南京] [--weather-interval 1800]
+    python relay_server.py [--city 贵阳] [--weather-interval 1800]
 """
 
 import asyncio
@@ -28,6 +28,14 @@ DEVICE_ID = "blinds_001"
 # ── Weather ──
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+
+# 城市拼音别名: Open-Meteo geocoding 对中文城市名支持有限, 用拼音查询更可靠
+CITY_PINYIN = {
+    "贵阳": "Guiyang",
+    "贵阳市": "Guiyang",
+    "厦门": "Xiamen",
+    "厦门市": "Xiamen",
+}
 WMO_CODES = {
     0: "晴", 1: "晴", 2: "多云", 3: "阴",
     45: "雾", 48: "雾凇", 51: "小雨", 53: "小雨", 55: "中雨",
@@ -258,11 +266,13 @@ reply: 口语气息, 像朋友聊天, 加点语气词(呀、啦、嘛、哦、�
 def fetch_weather(city_name: str) -> dict | None:
     """Synchronous weather fetch (runs in thread pool)."""
     try:
-        geo = requests.get(GEO_URL, params={"name": city_name, "count": 1, "language": "zh"}, timeout=10)
+        # Open-Meteo geocoding 用拼音城市名查询更可靠 (贵阳→Guiyang)
+        geo_name = CITY_PINYIN.get(city_name, city_name)
+        geo = requests.get(GEO_URL, params={"name": geo_name, "count": 1, "language": "zh"}, timeout=10)
         geo.raise_for_status()
         geo_data = geo.json()
         if not geo_data.get("results"):
-            # 中文名可能查不到 (如 "厦门"), 尝试加"市"后缀 (厦门→厦门市)
+            # 拼音查不到再尝试中文原名加"市"后缀 (厦门→厦门市)
             geo = requests.get(GEO_URL, params={"name": city_name + "市", "count": 1, "language": "zh"}, timeout=10)
             geo.raise_for_status()
             geo_data = geo.json()
@@ -983,7 +993,7 @@ async def main(city: str, weather_interval: int):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Smart Blinds Server")
-    parser.add_argument("--city", default="厦门", help="天气城市 (默认: 厦门)")
+    parser.add_argument("--city", default="贵阳", help="天气城市 (默认: 贵阳)")
     parser.add_argument("--weather-interval", type=int, default=1800,
                         help="天气推送间隔/秒 (默认: 1800)")
     args = parser.parse_args()
