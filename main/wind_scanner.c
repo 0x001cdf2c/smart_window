@@ -206,7 +206,7 @@ bool wind_scanner_init(void)
 
     xTaskCreate(scanner_task, "wind_scan", 4096, NULL, 5, &s_task);
 
-    ESP_LOGI(TAG, "Wind scanner ready (RMT GPIO%u, analog wind via ADS1115 AIN2)",
+    ESP_LOGI(TAG, "Wind scanner ready (RMT GPIO%u, analog wind via ADS1115 AIN3)",
              SCAN_SERVO_GPIO);
     return true;
 }

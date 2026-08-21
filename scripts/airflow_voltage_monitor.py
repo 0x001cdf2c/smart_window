@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-time airflow (motor/generator) voltage monitor.
 
-Reads the ESP32-P4 serial log, extracts "AIN2 raw=<n> → <pct>%" lines, and
+Reads the ESP32-P4 serial log, extracts "AIN3 raw=<n> → <pct>%" lines, and
 converts the raw ADS1115 value to real voltage.
 
 ADS1115 config (adc_ads1115.c): PGA ±4.096V, 16-bit signed.
@@ -33,7 +33,7 @@ if '--seconds' in args:
 
 LSB_MV = 0.125  # 1 raw = 0.125 mV
 
-line_re = re.compile(r'AIN2 raw=(-?\d+)')
+line_re = re.compile(r'AIN3 raw=(-?\d+)')
 pct_re = re.compile(r'(?:→|pct=)\s*(-?\d+)\s*%')
 
 
@@ -47,7 +47,7 @@ def fmt_voltage(raw):
 def main():
     ser = serial.Serial(PORT, 115200, timeout=0.5)
     print(f"Connected to {PORT} @ 115200 baud", flush=True)
-    print("Waiting for 'AIN2 raw=' lines... blow wind at the sensor.\n", flush=True)
+    print("Waiting for 'AIN3 raw=' lines... blow wind at the sensor.\n", flush=True)
     print(f"{'raw':>6}  {'voltage':>10}  {'pct':>5}", flush=True)
     print("-" * 26, flush=True)
 
@@ -86,7 +86,7 @@ def main():
               f"avg={fmt_voltage(sum(raws)/len(raws))}", flush=True)
         print("=" * 40, flush=True)
     else:
-        print("\nNo 'AIN2 raw=' lines captured. Check: is the device connected/flashed? "
+        print("\nNo 'AIN3 raw=' lines captured. Check: is the device connected/flashed? "
               "Is the sensor task logging?", flush=True)
 
 

@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "ADS1115";
 
@@ -22,6 +23,7 @@ static const char *TAG = "ADS1115";
 
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool s_ready = false;
+static SemaphoreHandle_t s_mutex = NULL;
 
 bool ads1115_is_ready(void)
 {
@@ -67,8 +69,14 @@ bool ads1115_init(void)
         return false;
     }
 
+    s_mutex = xSemaphoreCreateMutex();
+    if (!s_mutex) {
+        ESP_LOGE(TAG, "Mutex create failed");
+        return false;
+    }
+
     s_ready = true;
-    ESP_LOGI(TAG, "ADS1115 ready at 0x%02X (AIN0=rain, AIN1=smoke, AIN2=airflow)", ADS1115_ADDR);
+    ESP_LOGI(TAG, "ADS1115 ready at 0x%02X (AIN0=rain, AIN1=smoke, AIN3=airflow)", ADS1115_ADDR);
     return true;
 }
 
@@ -79,6 +87,8 @@ bool ads1115_read_channel(int channel, int16_t *raw_out)
     const uint16_t mux_map[] = { AIN0_GND, AIN1_GND, 0x06, 0x07 };
     if (channel < 0 || channel > 3) return false;
 
+    if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
+
     uint16_t config = OS_SINGLE | (mux_map[channel] << 12)
                     | PGA_4096 | MODE_SINGLE | DR_128SPS | COMP_DISABLE;
 
@@ -87,6 +97,7 @@ bool ads1115_read_channel(int channel, int16_t *raw_out)
     esp_err_t ret = i2c_master_transmit(s_dev, cfg_buf, 3, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Config write ch%d: %s", channel, esp_err_to_name(ret));
+        if (s_mutex) xSemaphoreGive(s_mutex);
         return false;
     }
 
@@ -97,9 +108,11 @@ bool ads1115_read_channel(int channel, int16_t *raw_out)
     ret = i2c_master_transmit_receive(s_dev, &reg, 1, data, 2, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Read ch%d: %s", channel, esp_err_to_name(ret));
+        if (s_mutex) xSemaphoreGive(s_mutex);
         return false;
     }
 
     *raw_out = (int16_t)((data[0] << 8) | data[1]);
+    if (s_mutex) xSemaphoreGive(s_mutex);
     return true;
 }

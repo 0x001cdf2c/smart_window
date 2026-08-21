@@ -49,7 +49,7 @@ static float s_last_temp_out = 0.0f;
 static float s_last_humi_out = 0.0f;
 static float s_last_light = 0.0f;
 static int   s_last_smoke = 0;
-static int   s_last_airflow = 0;    /* 0-100% wind speed from motor/fan on AIN2 */
+static int   s_last_airflow = 0;    /* 0-100% wind speed from wind cup (D0 → GPIO48) */
 static int   s_last_rain = 0;
 static bool  s_rain_manual = false;   /* true = user manually overrode rain shelter */
 
