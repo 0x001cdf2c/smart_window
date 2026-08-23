@@ -53,7 +53,7 @@ float          control_env_target_angle(float temp, float humidity, float light)
 
 /* --- User-adaptive (learning) --- */
 
-void control_adaptive_record(float angle);   /* 0°=全开, 90°=全关 */
+void control_adaptive_record(float angle, float temp, float humidity, float light);   /* 0°=全开, 90°=全关 */
 void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
                                  const uint8_t *mins, int count);
 void control_adaptive_predict(void);

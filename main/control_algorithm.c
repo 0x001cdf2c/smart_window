@@ -16,9 +16,13 @@ static SemaphoreHandle_t s_oneshot_mutex = NULL;
 #define NVS_KEY_TIMER       "timer_cfg"
 #define NVS_KEY_PATTERNS    "user_pat"
 #define NVS_KEY_SCHEDULE    "schedule"
+#define NVS_KEY_WEIGHTS     "sensor_w"
 
 #define PATTERN_MAX         300
 #define PATTERN_BUCKETS     24
+
+#define PATTERN_FORMAT_VERSION  2   /* 结构体加传感器字段后升版, 旧数据自动清空重建 */
+#define SENSOR_W_DIM            6   /* 特征数: 偏热/偏冷/偏湿/强光/偏暗/偏置 */
 
 static control_mode_t s_mode = CONTROL_MODE_MANUAL;
 
@@ -38,9 +42,13 @@ typedef struct {
     uint8_t min;
     uint8_t day_of_week;    /* 0=Sun .. 6=Sat */
     uint8_t angle;          /* 0°=全开 .. 90°=全关 */
+    int16_t temp_x10;       /* 操作时温度 ×10 (0.1°C) */
+    uint8_t humidity;       /* 操作时湿度 % */
+    uint16_t light;         /* 操作时光照 lux */
 } pattern_entry_t;
 
 typedef struct {
+    uint32_t version;       /* 格式版本, 不匹配则清空重建 */
     int count;
     pattern_entry_t entries[PATTERN_MAX];
 } pattern_store_t;
@@ -100,10 +108,17 @@ static pattern_store_t *nvs_load_patterns(void)
     static pattern_store_t store;
     nvs_handle_t h;
     memset(&store, 0, sizeof(store));
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return &store;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        store.version = PATTERN_FORMAT_VERSION;
+        return &store;
+    }
     size_t sz = sizeof(store);
     nvs_get_blob(h, NVS_KEY_PATTERNS, &store, &sz);
     nvs_close(h);
+    if (store.version != PATTERN_FORMAT_VERSION) {
+        memset(&store, 0, sizeof(store));
+        store.version = PATTERN_FORMAT_VERSION;
+    }
     return &store;
 }
 
@@ -116,6 +131,91 @@ static void nvs_save_patterns(const pattern_store_t *store)
     nvs_close(h);
 }
 
+/* --- 学到的线性权重 (传感器偏移) ---
+ * 模型: offset = w·x,  x = [偏热, 偏冷, 偏湿, 强光, 偏暗, 偏置]
+ * 初值 = 手调经验值 (仅作先验), 之后用每次用户操作做一步在线 SGD, 让权重从数据里长出来。 */
+static float s_sensor_w[SENSOR_W_DIM] = {-20.0f, 15.0f, -10.0f, 20.0f, -15.0f, 0.0f};
+static const float s_sensor_w_prior[SENSOR_W_DIM] = {-20.0f, 15.0f, -10.0f, 20.0f, -15.0f, 0.0f};
+#define SENSOR_LR         0.02f   /* SGD 学习率 */
+#define SENSOR_L2_LAMBDA  0.01f   /* L2 向先验回归强度 (样本少时不偏离手调值太远) */
+#define SENSOR_W_CLAMP    60.0f   /* 权重限幅 */
+
+static void nvs_load_weights(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    size_t sz = sizeof(s_sensor_w);
+    nvs_get_blob(h, NVS_KEY_WEIGHTS, s_sensor_w, &sz);
+    nvs_close(h);
+}
+
+static void nvs_save_weights(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, NVS_KEY_WEIGHTS, s_sensor_w, sizeof(s_sensor_w));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void sensor_features(float temp, float humidity, float light, float x[SENSOR_W_DIM])
+{
+    x[0] = (temp > 28.0f)     ? 1.0f : 0.0f;   /* 偏热 → 更开 */
+    x[1] = (temp < 15.0f)     ? 1.0f : 0.0f;   /* 偏冷 → 更关 */
+    x[2] = (humidity > 70.0f) ? 1.0f : 0.0f;   /* 偏湿 → 更开 */
+    x[3] = (light > 35000.0f) ? 1.0f : 0.0f;   /* 强光 → 更关 */
+    x[4] = (light < 500.0f)   ? 1.0f : 0.0f;   /* 偏暗 → 更开 */
+    x[5] = 1.0f;                                /* 偏置 */
+}
+
+static float sensor_offset(float temp, float humidity, float light)
+{
+    float x[SENSOR_W_DIM];
+    sensor_features(temp, humidity, light, x);
+    float off = 0.0f;
+    for (int i = 0; i < SENSOR_W_DIM; i++) off += s_sensor_w[i] * x[i];
+    return off;
+}
+
+static float per_hour_mean(const pattern_store_t *store, int hour)
+{
+    float sum = 0.0f;
+    int n = 0;
+    for (int i = 0; i < store->count; i++) {
+        if (store->entries[i].hour == hour) {
+            sum += (float)store->entries[i].angle;
+            n++;
+        }
+    }
+    if (n > 0) return sum / (float)n;
+    if (store->count == 0) return 45.0f;
+    for (int i = 0; i < store->count; i++) sum += (float)store->entries[i].angle;
+    return sum / (float)store->count;
+}
+
+static void adaptive_train_step(const pattern_store_t *store,
+                                float angle, float temp, float humidity, float light, int hour)
+{
+    /* 学习目标: 环境的贡献 = 实际角度 − 该时段的时间习惯均值 */
+    float residual = angle - per_hour_mean(store, hour);
+
+    float x[SENSOR_W_DIM];
+    sensor_features(temp, humidity, light, x);
+    float pred = 0.0f;
+    for (int i = 0; i < SENSOR_W_DIM; i++) pred += s_sensor_w[i] * x[i];
+
+    float err = pred - residual;
+    for (int i = 0; i < SENSOR_W_DIM; i++) {
+        s_sensor_w[i] -= SENSOR_LR * (err * x[i]
+                                      + SENSOR_L2_LAMBDA * (s_sensor_w[i] - s_sensor_w_prior[i]));
+    }
+    for (int i = 0; i < SENSOR_W_DIM; i++) {
+        if (s_sensor_w[i] >  SENSOR_W_CLAMP) s_sensor_w[i] =  SENSOR_W_CLAMP;
+        if (s_sensor_w[i] < -SENSOR_W_CLAMP) s_sensor_w[i] = -SENSOR_W_CLAMP;
+    }
+    nvs_save_weights();
+}
+
 /* --- Init --- */
 
 void control_algorithm_init(void)
@@ -126,6 +226,7 @@ void control_algorithm_init(void)
     memset(&s_schedule, 0, sizeof(s_schedule));
     nvs_load_timer();
     nvs_load_schedule();
+    nvs_load_weights();
     ESP_LOGI(TAG, "Init OK, timer=%s, schedule entries=%d",
              s_timer.enabled ? "on" : "off", s_schedule.count);
 }
@@ -299,6 +400,9 @@ void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
         e->min  = (uint8_t)tm.tm_min;
         e->day_of_week = (uint8_t)tm.tm_wday;
         e->angle = angles[i];
+        e->temp_x10 = 250;      /* 25.0°C, 中性 (演示数据无真实传感器) */
+        e->humidity = 50;
+        e->light    = 5000;
         store->count++;
     }
 
@@ -327,7 +431,7 @@ void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
     fflush(stdout);
 }
 
-void control_adaptive_record(float angle)
+void control_adaptive_record(float angle, float temp, float humidity, float light)
 {
     pattern_store_t *store = nvs_load_patterns();
     if (store->count >= PATTERN_MAX) {
@@ -348,6 +452,9 @@ void control_adaptive_record(float angle)
     e->min  = (uint8_t)tm.tm_min;
     e->day_of_week = (uint8_t)tm.tm_wday;
     e->angle = a;
+    e->temp_x10 = (int16_t)(temp * 10.0f);
+    e->humidity = (uint8_t)humidity;
+    e->light    = (uint16_t)(light > 65535.0f ? 65535.0f : light);
 
     nvs_save_patterns(store);
 
@@ -371,6 +478,9 @@ void control_adaptive_record(float angle)
 
     ESP_LOGI(TAG, "Recorded angle=%d° (%s) at %02d:%02d (total %d)",
              a, label, e->hour, e->min, store->count);
+
+    /* 在线学习: 对本条操作做一步 SGD, 更新传感器偏移权重 */
+    adaptive_train_step(store, (float)a, temp, humidity, light, e->hour);
 }
 
 const recent_op_t *control_adaptive_get_recent_ops(int *out_count)
@@ -479,37 +589,15 @@ void control_adaptive_predict_sensor_aware(float temp, float humidity, float lig
         return;
     }
 
-    /* ── 传感器偏移 ── */
-    float angle_offset = 0.0f;
+    /* ── 传感器偏移 (学到的线性权重: 手调值仅作先验/初值) ── */
+    float angle_offset = sensor_offset(temp, humidity, light);
     printf("║ 当前环境: T=%.1f C  H=%.0f%%  L=%.0f lux            ║\n",
            temp, humidity, light);
     printf("╠══════════════════════════════════════════════════╣\n");
-    printf("║ 传感器偏移:                                        ║\n");
-
-    if (temp > 28.0f) {
-        angle_offset -= 20.0f;
-        printf("║   ✓ 偏热 (%.1f > 28) → 角度-20 (更开)             ║\n", temp);
-    }
-    if (temp < 15.0f) {
-        angle_offset += 15.0f;
-        printf("║   ✓ 偏冷 (%.1f < 15) → 角度+15 (更关)             ║\n", temp);
-    }
-    if (humidity > 70.0f) {
-        angle_offset -= 10.0f;
-        printf("║   ✓ 偏湿 (%.0f%% > 70) → 角度-10 (更开)           ║\n", humidity);
-    }
-    if (light > 35000.0f) {
-        angle_offset += 20.0f;
-        printf("║   ✓ 强光 (%.0f > 35k) → 角度+20 (更关)            ║\n", light);
-    } else if (light < 500.0f) {
-        angle_offset -= 15.0f;
-        printf("║   ✓ 偏暗 (%.0f < 500) → 角度-15 (更开)            ║\n", light);
-    }
-
-    if (angle_offset == 0.0f) {
-        printf("║   — 环境适中, 无偏移调整                            ║\n");
-    }
-    printf("║  角度总偏移: %+.0f                                  ║\n", angle_offset);
+    printf("║ 传感器偏移(已学习): %+.0f                            ║\n", angle_offset);
+    printf("║ 权重 热/冷/湿/强光/暗/偏置: %+.0f/%+.0f/%+.0f/%+.0f/%+.0f/%+.0f ║\n",
+           s_sensor_w[0], s_sensor_w[1], s_sensor_w[2],
+           s_sensor_w[3], s_sensor_w[4], s_sensor_w[5]);
 
     /* ── 24h 桶: 加权角度和 + 权重总和 ── */
     float w_angle[24] = {0};

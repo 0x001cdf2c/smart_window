@@ -33,8 +33,9 @@ static const char *const CLIMATE_NAMES[CLIMATE_COUNT] = {
     "寒冷干燥", "寒冷湿润", "沿海强风",
 };
 
-static const char *const STRATEGY_NAMES[7] = {
+static const char *const STRATEGY_NAMES[8] = {
     "防雨", "保温", "用户习惯", "通风采光", "通风遮光", "防风采光", "防风遮光",
+    "默认全开",
 };
 
 /* ── 阈值 ── */
@@ -216,6 +217,16 @@ adaptive_decision_t adaptive_mode_evaluate(const adaptive_input_t *in,
         d.blinds_angle = 90.0f;          /* 保温: 全关 */
         d.shelter_action = SHELTER_HOLD; /* 雨棚不管 */
         d.strategy_name = STRATEGY_NAMES[STRATEGY_INSULATE];
+        build_matrix(in, d.climate, now, d.matrix);
+        return d;
+    }
+
+    /* 2.5 无训练数据 → 默认全开 (学习阶段先全开采集数据, 有足够历史后再用拟合结果) */
+    if (!plan || plan->count == 0) {
+        d.strategy = STRATEGY_DEFAULT_OPEN;
+        d.blinds_angle = 0.0f;              /* 全开 */
+        d.shelter_action = SHELTER_HOLD;    /* 雨棚不管 */
+        d.strategy_name = STRATEGY_NAMES[STRATEGY_DEFAULT_OPEN];
         build_matrix(in, d.climate, now, d.matrix);
         return d;
     }

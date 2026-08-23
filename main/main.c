@@ -66,7 +66,7 @@ static void on_ui_action(const char *action)
 
     if (strcmp(action, "open") == 0) {
         servo_set_angle(0.0f);
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
         if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
@@ -75,7 +75,7 @@ static void on_ui_action(const char *action)
         }
     } else if (strcmp(action, "close") == 0) {
         servo_set_angle(90.0f);
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
         if (control_get_mode() != CONTROL_MODE_ADAPTIVE) {
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
@@ -334,12 +334,12 @@ static void handle_asr_text(const char *text)
     switch (r.intent) {
     case NLP_INTENT_OPEN:
         servo_set_angle(0.0f);
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
         voice_reply_say(r.reply);
         break;
     case NLP_INTENT_CLOSE:
         servo_set_angle(90.0f);
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
         voice_reply_say(r.reply);
         break;
     case NLP_INTENT_STOP:
@@ -436,6 +436,7 @@ static void handle_web_command(const char *json_str)
             g_auto_running = false;
             servo_set_mode(SERVO_MODE_MANUAL);
             servo_set_angle(angle);
+            control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
             ESP_LOGI(TAG, "手动设置角度: %.1f°", angle);
         }
 
@@ -450,14 +451,14 @@ static void handle_web_command(const char *json_str)
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(0.0f);
         voice_reply_say("打开窗户");
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
 
     } else if (strcmp(cmd, "close_blinds") == 0) {
         g_auto_running = false;
         servo_set_mode(SERVO_MODE_MANUAL);
         servo_set_angle(90.0f);
         voice_reply_say("关闭窗户");
-        control_adaptive_record(servo_get_angle());
+        control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
 
     } else if (strcmp(cmd, "rain_expand") == 0) {
         s_rain_manual = true;
@@ -638,10 +639,10 @@ static void handle_web_command(const char *json_str)
         if (act && act->valuestring) {
             if (strcmp(act->valuestring, "open") == 0) {
                 servo_set_angle(0.0f);
-                control_adaptive_record(servo_get_angle());
+                control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
             } else if (strcmp(act->valuestring, "close") == 0) {
                 servo_set_angle(90.0f);
-                control_adaptive_record(servo_get_angle());
+                control_adaptive_record(servo_get_angle(), s_last_temp, s_last_humi, s_last_light);
             } else if (strcmp(act->valuestring, "timer") == 0) {
                 cJSON *tm = cJSON_GetObjectItem(root, "time");
                 cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
@@ -842,7 +843,7 @@ static void sensor_task(void *arg)
             }
 
             if (ad.strategy == STRATEGY_USER_HABIT) {
-                control_adaptive_record(ad.blinds_angle);
+                control_adaptive_record(ad.blinds_angle, s_last_temp, s_last_humi, s_last_light);
             }
 
             if (ad.shelter_action == SHELTER_EXPAND) {

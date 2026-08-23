@@ -35,6 +35,7 @@ typedef enum {
     STRATEGY_VENT_SHADE,         /* 通风遮光 */
     STRATEGY_WINDPROOF_LIGHT,    /* 防风采光 */
     STRATEGY_WINDPROOF_SHADE,    /* 防风遮光 */
+    STRATEGY_DEFAULT_OPEN,       /* 学习阶段默认全开 (无训练数据) */
 } strategy_t;
 
 /* 雨棚动作 */
