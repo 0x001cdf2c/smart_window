@@ -59,6 +59,7 @@ void control_adaptive_demo_load(const uint8_t *angles, const uint8_t *hours,
 void control_adaptive_predict(void);
 void control_adaptive_predict_sensor_aware(float temp, float humidity, float light);
 const schedule_plan_t *control_adaptive_get_plan(void);
+void control_adaptive_get_sensor_weights(float out[6]);   /* 6个学习权重: 热/冷/湿/强光/暗/偏置 */
 
 #define RECENT_OPS_MAX 10
 typedef struct {

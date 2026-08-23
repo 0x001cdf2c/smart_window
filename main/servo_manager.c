@@ -3,6 +3,7 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/mcpwm_timer.h"
 #include "driver/mcpwm_oper.h"
 #include "driver/mcpwm_cmpr.h"
@@ -27,6 +28,7 @@ static bool         s_inverted[SERVO_COUNT];
 static float        s_angle = 0.0f;
 static servo_mode_t s_mode = SERVO_MODE_MANUAL;
 static bool         s_initialized = false;
+static SemaphoreHandle_t s_rain_mutex = NULL;   /* 雨棚开合互斥锁 */
 
 static mcpwm_timer_handle_t s_timer = NULL;
 static mcpwm_oper_handle_t  s_opers[OP_COUNT];
@@ -147,6 +149,7 @@ esp_err_t servo_init(const int gpios[SERVO_COUNT])
     }
 
     s_angle = 90.0f;
+    s_rain_mutex = xSemaphoreCreateMutex();
     s_initialized = true;
 
     ESP_LOGI(TAG, "Servo x%d ready on GPIO%d/%d/%d/%d/%d/%d (init=90 deg)",
@@ -299,10 +302,16 @@ static void rain_shelter_move_to(float target_angle)
 void servo_rain_shelter_set(bool expand)
 {
     if (!s_initialized) return;
+    if (!s_rain_mutex) return;
+
+    xSemaphoreTake(s_rain_mutex, portMAX_DELAY);
 
     /* 状态未变则跳过 — 雨棚自动控制在每个传感器周期都会被调用,
      * 若每次都重跑开合动画, 切模式/传感器抖动时就会多余地开合一次 */
-    if (expand == s_rain_expanded) return;
+    if (expand == s_rain_expanded) {
+        xSemaphoreGive(s_rain_mutex);
+        return;
+    }
 
     /* expand=展开(90°), collapse=收起(135°) */
     float target = expand ? RAIN_SHELTER_EXPANDED_DEG : RAIN_SHELTER_COLLAPSED_DEG;
@@ -310,6 +319,8 @@ void servo_rain_shelter_set(bool expand)
     rain_shelter_move_to(target);
 
     s_rain_expanded = expand;
+    xSemaphoreGive(s_rain_mutex);
+
     ESP_LOGI(TAG, "Rain shelter -> %s (%.0f deg)", expand ? "展开" : "收起", target);
 }
 

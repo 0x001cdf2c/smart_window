@@ -661,6 +661,7 @@
         <span id="adaptiveStrategy" style="font-size:12px;padding:2px 10px;background:#ede7f6;color:#5f27cd;border-radius:12px;font-weight:600;">—</span>
       </div>
       <div id="adaptiveMatrix" style="margin-top:8px;display:flex;flex-direction:column;gap:5px;"></div>
+      <div id="adaptiveWeights" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;"></div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="cmd-btn" onclick="loadAdaptiveDemo()"
@@ -1524,6 +1525,22 @@ function updateAdaptiveMode(pl) {
     '</div>';
   });
   document.getElementById('adaptiveMatrix').innerHTML = html;
+
+  const wl = ['热', '冷', '湿', '亮', '暗', '偏'];
+  const weights = pl.weights || [];
+  const wbox = document.getElementById('adaptiveWeights');
+  if (!weights.length) { wbox.innerHTML = ''; return; }
+  let whtml = '<span style="font-size:11px;color:var(--muted);align-self:center;margin-right:2px;">学习权重</span>';
+  weights.forEach((w, i) => {
+    if (i >= wl.length) return;
+    const iv = Math.round(w);
+    const sign = iv > 0 ? ('+' + iv) : (iv === 0 ? '0' : ('' + iv));
+    const col = iv > 0 ? '#e65100' : (iv < 0 ? '#27ae60' : 'var(--muted)');
+    whtml += '<span style="font-size:11px;font-weight:600;padding:3px 8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;white-space:nowrap;">' +
+      '<span style="color:var(--muted);margin-right:4px;">' + wl[i] + '</span>' +
+      '<span style="color:' + col + ';">' + sign + '</span></span>';
+  });
+  wbox.innerHTML = whtml;
 }
 // ── End adaptive panel ──
 

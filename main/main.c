@@ -745,7 +745,8 @@ static void sensor_task(void *arg)
                      control_get_mode() == CONTROL_MODE_ADAPTIVE)) {
                     servo_rain_shelter_set(true);
                 }
-            } else if (control_get_mode() == CONTROL_MODE_ENV && !s_rain_manual) {
+            } else if ((control_get_mode() == CONTROL_MODE_ENV ||
+                        control_get_mode() == CONTROL_MODE_ADAPTIVE) && !s_rain_manual) {
                 servo_rain_shelter_set(false);
             }
         }
@@ -867,6 +868,12 @@ static void sensor_task(void *arg)
                 cJSON *mx = cJSON_AddArrayToObject(am, "matrix");
                 for (int i = 0; i < 4; i++) {
                     cJSON_AddItemToArray(mx, cJSON_CreateNumber(ad.matrix[i]));
+                }
+                float w[6];
+                control_adaptive_get_sensor_weights(w);
+                cJSON *wj = cJSON_AddArrayToObject(am, "weights");
+                for (int i = 0; i < 6; i++) {
+                    cJSON_AddItemToArray(wj, cJSON_CreateNumber(w[i]));
                 }
                 char *js = cJSON_PrintUnformatted(am);
                 msg_bus_send("adaptive_mode", js);
@@ -1298,7 +1305,7 @@ void app_main(void)
     airflow_sensor_init();
     rain_sensor_init();
     /* 传感器任务 — 所有 I2C 设备就绪后启动 (msg_bus_send 在未连接时安全返回 -1) */
-    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
+    xTaskCreate(sensor_task, "sensor", 8192, NULL, 5, NULL);
     ESP_LOGI(TAG, "Sensor task started");
 
     /* I2C bus handle stays valid — all devices share it.

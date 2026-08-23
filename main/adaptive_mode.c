@@ -39,7 +39,7 @@ static const char *const STRATEGY_NAMES[8] = {
 };
 
 /* ── 阈值 ── */
-#define RAIN_EXPAND_THRESHOLD   50.0f   /* 雨水 > 50% → 防雨 */
+#define RAIN_EXPAND_THRESHOLD   30.0f   /* 雨水 > 30% → 防雨 */
 #define WIND_COASTAL_THRESHOLD  60.0f   /* 风速 > 60% → 沿海强风 */
 #define HUMID_THRESHOLD         60.0f   /* 湿度 >= 60% → 湿润 */
 #define HOT_TEMP_THRESHOLD      28.0f   /* 室外 >= 28℃ → 炎热 */

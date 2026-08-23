@@ -289,7 +289,7 @@ env_action_t control_env_evaluate(float temp, float temp_out,
 
     /* 第一层: 安全优先 — 烟雾或雨水超标立即关闭 */
     if (smoke > 15.0f)  return ENV_ACTION_CLOSE;  /* 烟雾浓度超标, 关窗防护 */
-    if (rain > 50.0f)   return ENV_ACTION_CLOSE;  /* 雨水强度 > 50%, 关窗防水 */
+    if (rain > 30.0f)   return ENV_ACTION_CLOSE;  /* 雨水强度 > 30%, 关窗防水 */
 
     float dt = temp - temp_out;   /* dt > 0 = 室外更凉, dt < 0 = 室外更热 */
 
@@ -509,9 +509,12 @@ void control_adaptive_predict(void)
         return;
     }
 
-    /* 24h buckets: sum of angles + count per hour */
-    float angle_sum[24] = {0};
-    int count_buckets[24] = {0};
+    /* 24h buckets: sum of angles + count per hour (static 避免栈峰值) */
+    static float angle_sum[24];
+    static int count_buckets[24];
+    static int order[24];
+    memset(angle_sum, 0, sizeof(angle_sum));
+    memset(count_buckets, 0, sizeof(count_buckets));
 
     for (int i = 0; i < store->count; i++) {
         int h = store->entries[i].hour;
@@ -520,7 +523,6 @@ void control_adaptive_predict(void)
     }
 
     /* Sort by count descending, pick top 4 */
-    int order[24];
     for (int h = 0; h < 24; h++) order[h] = h;
 
     for (int i = 0; i < 23; i++) {
@@ -599,10 +601,13 @@ void control_adaptive_predict_sensor_aware(float temp, float humidity, float lig
            s_sensor_w[0], s_sensor_w[1], s_sensor_w[2],
            s_sensor_w[3], s_sensor_w[4], s_sensor_w[5]);
 
-    /* ── 24h 桶: 加权角度和 + 权重总和 ── */
-    float w_angle[24] = {0};
-    float w_total[24] = {0};
-    int raw_count[24] = {0};
+    /* ── 24h 桶: 加权角度和 + 权重总和 (static 避免栈峰值) ── */
+    static float w_angle[24];
+    static float w_total[24];
+    static int raw_count[24];
+    memset(w_angle, 0, sizeof(w_angle));
+    memset(w_total, 0, sizeof(w_total));
+    memset(raw_count, 0, sizeof(raw_count));
 
     /* Count raw records per hour for confidence */
     for (int i = 0; i < store->count; i++) {
@@ -651,7 +656,7 @@ void control_adaptive_predict_sensor_aware(float temp, float humidity, float lig
     printf("╠══════════════════════════════════════════════════╣\n");
 
     /* ── 选 Top-4 记录最多的小时 ── */
-    int order[24];
+    static int order[24];
     for (int h = 0; h < 24; h++) order[h] = h;
 
     for (int i = 0; i < 23; i++) {
@@ -721,6 +726,13 @@ void control_adaptive_predict_sensor_aware(float temp, float humidity, float lig
 const schedule_plan_t *control_adaptive_get_plan(void)
 {
     return &s_schedule;
+}
+
+void control_adaptive_get_sensor_weights(float out[6])
+{
+    for (int i = 0; i < SENSOR_W_DIM; i++) {
+        out[i] = s_sensor_w[i];
+    }
 }
 
 /* --- One-shot timer array --- */
