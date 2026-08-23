@@ -10,7 +10,7 @@ import time
 import os
 import threading
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
 
 import websockets
@@ -829,7 +829,9 @@ async def weather_loop(city: str, interval: int):
 # ============================================================
 def run_http():
     os.chdir(str(WEBUI_DIR))
-    server = HTTPServer(("0.0.0.0", HTTP_PORT), SimpleHTTPRequestHandler)
+    # 单线程 HTTPServer 会被一个卡住的客户端堵死所有网页请求, 改用 ThreadingHTTPServer (每请求一线程)
+    server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), SimpleHTTPRequestHandler)
+    server.daemon_threads = True
     log("HTTP", f"Web UI → http://0.0.0.0:{HTTP_PORT}")
     server.serve_forever()
 
@@ -943,37 +945,43 @@ async def handle_connection(ws):
         elif msg_type == "ping":
             await ws.send(json.dumps({"type": "pong", "payload": {}}))
 
-    # ── disconnected ──
+async def _cleanup_connection(ws):
+    """连接结束后统一清理注册表 (放在 finally 里调用, 异常掉线也不会残留死连接)."""
     dev_id = ws_to_device.pop(ws, None)
     ws_to_role.pop(ws, None)
-    if dev_id:
-        if ws == devices.get(dev_id):
-            del devices[dev_id]
-            log("DEVICE", f"离线: {dev_id}")
-            for c in clients.get(dev_id, set()).copy():
-                try:
-                    await c.send(json.dumps({"type": "device_offline", "payload": {}}))
-                except:
-                    pass
-        else:
-            clients.get(dev_id, set()).discard(ws)
-            log("CLIENT", f"断开 [{dev_id}] ({len(clients.get(dev_id, set()))} 在线)")
-            dev = devices.get(dev_id)
-            if dev:
-                try:
-                    await dev.send(json.dumps({"type": "client_offline", "payload": {}}))
-                except:
-                    pass
+    if not dev_id:
+        return
+    if ws == devices.get(dev_id):
+        devices.pop(dev_id, None)
+        log("DEVICE", f"离线: {dev_id}")
+        for c in clients.get(dev_id, set()).copy():
+            try:
+                await c.send(json.dumps({"type": "device_offline", "payload": {}}))
+            except Exception:
+                clients.get(dev_id, set()).discard(c)
+    else:
+        clients.get(dev_id, set()).discard(ws)
+        log("CLIENT", f"断开 [{dev_id}] ({len(clients.get(dev_id, set()))} 在线)")
+        dev = devices.get(dev_id)
+        if dev:
+            try:
+                await dev.send(json.dumps({"type": "client_offline", "payload": {}}))
+            except Exception:
+                pass
 
 # ============================================================
 # Main
 # ============================================================
 async def _safe_handle_connection(ws):
-    """包装 handle_connection, 设备/客户端掉线时只打一行日志, 不再刷整段堆栈."""
+    """包装 handle_connection: 无论正常/异常掉线, 只打一行日志并确保清理注册表."""
     try:
         await handle_connection(ws)
     except (ConnectionClosed, ConnectionResetError, BrokenPipeError) as e:
         log("WS", f"连接断开: {type(e).__name__} ({e})")
+    except Exception as e:
+        log("WS", f"处理器异常: {type(e).__name__} ({e})")
+    finally:
+        await _cleanup_connection(ws)
 
 async def main(city: str, weather_interval: int):
     global weather_city
@@ -987,7 +995,10 @@ async def main(city: str, weather_interval: int):
         asyncio.create_task(weather_loop(city, weather_interval))
         log("WEATHER", f"已启用 城市={city} 间隔={weather_interval}s")
 
-    async with websockets.serve(_safe_handle_connection, "0.0.0.0", WS_PORT):
+    async with websockets.serve(
+        _safe_handle_connection, "0.0.0.0", WS_PORT,
+        ping_interval=20, ping_timeout=20, close_timeout=5,
+    ):
         await asyncio.Future()
 
 if __name__ == "__main__":
