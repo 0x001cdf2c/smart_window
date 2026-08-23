@@ -1,0 +1,51 @@
+arduino uno 示例代码：
+
+// 简易霍尔风杯风速计 Arduino UNO
+#define HALL_PIN 2  // 霍尔传感器接D2(UNO外部中断0)
+
+volatile unsigned long pulseCount = 0; // 脉冲计数(中断变量必须volatile)
+unsigned long lastTime = 0;
+float windSpeed = 0;
+
+// 风杯旋转半径 0.082米(82mm)
+const float R = 0.082;
+
+// DIY风杯修正系数，范围2.0~2.5，实际使用可以微调
+const float K = 2.2;
+
+// 中断回调函数：每转一圈触发一次
+void countPulse(){
+  pulseCount++;
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(HALL_PIN, INPUT_PULLUP); // 开启内部上拉
+  // UNO D2 = 中断0，下降沿触发(磁铁靠近输出低电平)
+  attachInterrupt(0, countPulse, FALLING);
+
+  lastTime = millis();
+}
+
+void loop() {
+  // 1秒更新一次风速
+  if(millis() - lastTime >= 1000){
+    noInterrupts();   // 临时关闭中断，防止读取时数据错乱
+    unsigned long cnt = pulseCount;
+    pulseCount = 0;
+    interrupts();     // 重新开启中断
+
+    float rps = cnt;  // 每秒转数 r/s
+    windSpeed = K * 2 * PI * R * rps;  // 计算风速 m/s
+    float kmh = windSpeed * 3.6;  // 换算 km/h
+
+    Serial.print("脉冲/秒:");
+    Serial.print(cnt);
+    Serial.print(" 风速m/s:");
+    Serial.print(windSpeed,2);
+    Serial.print(" km/h:");
+    Serial.println(kmh,1);
+
+    lastTime = millis();
+  }
+}
